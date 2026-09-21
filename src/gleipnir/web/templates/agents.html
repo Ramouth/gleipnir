@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% set page_id = 'agents' %}
+{% block title %}Who may do what · Gleipnir{% endblock %}
+
+{% block body %}
+<h1>Who may do what</h1>
+<p class="lede">
+  Every party that acts on this system, and the exact extent of its authority.
+  A role is defined by what it may <em>write</em> — whether a step runs as a
+  regex, a rule table, a language model or a person is an implementation fact;
+  whether its output can put a colour on a company is a design fact, and it is
+  the only one recorded here.
+</p>
+
+<h2>The two questions a reader is entitled to ask</h2>
+<div class="panel">
+  <p style="margin-top:0">
+    <strong>Who can put a colour on a company?</strong>
+    <span class="mono">{{ holders[Capability.ASSIGN_COLOUR] | join(", ") }}</span>
+    — the closed rule table, deterministic, and not a model.
+  </p>
+  <p style="margin-bottom:0">
+    <strong>Who can spend registry quota?</strong>
+    <span class="mono">{{ holders[Capability.SPEND_QUOTA] | join(", ") }}</span>
+    — and only against the one source named on a Need the planner derived.
+  </p>
+</div>
+
+<h2>No model-backed role may ever hold</h2>
+<div class="panel">
+  <p class="mono small" style="margin:0">{{ model_forbidden | join(" · ") }}</p>
+  <p class="small faint" style="margin-bottom:0">
+    Enforced over the whole table rather than per call site: a new model-backed
+    role cannot be granted the power to conclude without failing a test that
+    already exists.
+  </p>
+</div>
+
+<h2>The roster <span class="count">— in the order a fact travels</span></h2>
+{% for r in agent_roles %}
+  <div class="role">
+    <div class="role-head">
+      <span class="role-name">{{ r.name }}</span>
+      <span class="tag {{ r.autonomy }}">{{ r.autonomy }}</span>
+      <span class="mono small faint">{{ r.module }}</span>
+    </div>
+    <p style="margin:8px 0 0">{{ r.mandate }}</p>
+
+    <div class="grant">
+      <div><span class="may">may</span>
+        {{ r.capabilities | map(attribute='value') | sort | join(" · ") }}</div>
+      {% if r.forbidden %}
+      <ul>
+        {% for cap, why in r.forbidden %}
+          <li><span class="maynot">may not {{ cap.value }}</span>
+            <span class="why">— {{ why }}</span></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+
+    <table style="margin-top:10px">
+      <tbody>
+        <tr><th style="width:90px">reads</th><td>{{ r.consumes }}</td></tr>
+        <tr><th>writes</th><td>{{ r.produces }}</td></tr>
+        <tr><th>halts on</th><td>{{ r.halts_on }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% endfor %}
+
+<h2>Capability, and who holds it</h2>
+<table>
+  <thead><tr><th>Capability</th><th>Held by</th></tr></thead>
+  <tbody>
+  {% for c in capabilities %}
+    <tr>
+      <td class="mono">{{ c.value }}</td>
+      <td class="mono soft">{{ holders[c] | join(", ") }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="small faint" style="margin-top:8px">
+  Deny-by-default: a role holds exactly what is listed against it. There is no
+  inheritance and no ambient authority, and a capability nobody holds fails the
+  invariant check rather than sitting in the enum unnoticed.
+</p>
+{% endblock %}

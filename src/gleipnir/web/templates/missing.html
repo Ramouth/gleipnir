@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ cvr }} not in the store · Gleipnir{% endblock %}
+
+{% block body %}
+<h1>CVR {{ cvr }} is not in the raw store</h1>
+<p class="lede">
+  Which is a statement about our coverage, not about the company. Nothing has
+  been checked and nothing came back clean.
+</p>
+<div class="panel">
+  <p style="margin-top:0">The workbench holds a registry budget of zero and cannot
+    fetch it. To ingest the company, spend quota deliberately from the CLI:</p>
+  <pre class="blob">.venv/bin/python scripts/gcli.py screen {{ cvr }} --budget=1</pre>
+  <p style="margin-bottom:0" class="small faint">
+    Then reload this page — the workbench notices the store moved and drops its
+    caches on the next request.
+  </p>
+</div>
+<p style="margin-top:18px"><a href="/">← back to the companies in the store</a></p>
+{% endblock %}

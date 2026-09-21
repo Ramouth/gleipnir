@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% set page_id = 'index' %}
+{% block title %}Companies · Gleipnir{% endblock %}
+
+{% block body %}
+<h1>Companies in the raw store</h1>
+<p class="lede">Everything already fetched. Opening one costs nothing — the
+  workbench reads the store and never spends registry quota.</p>
+
+<div class="cols">
+  <div>
+    <form class="row" action="/" method="get" style="margin-top:18px">
+      <div>
+        <label for="q">Filter by CVR number or name</label>
+        <input type="search" id="q" name="q" value="{{ q }}" autocomplete="off"
+               placeholder="CVR number or company name"
+               hx-get="/partials/companies"
+               hx-trigger="input changed delay:150ms, search"
+               hx-target="#companies"
+               hx-indicator="#spin">
+      </div>
+      <button type="submit">Filter</button>
+    </form>
+    <div id="spin" class="spinner">searching…</div>
+
+    <div id="companies">
+      {% include "_companies.html" %}
+    </div>
+  </div>
+
+  <aside>
+    <h2>The store</h2>
+    <div class="panel small">
+      <table>
+        <tbody>
+          <tr><td>companies</td><td class="num">{{ "{:,}".format(stats.companies) }}</td></tr>
+          <tr><td>fetch records</td><td class="num">{{ "{:,}".format(stats.fetches) }}</td></tr>
+          <tr><td>payload bytes</td><td class="num">{{ "{:,}".format(stats.bytes) }}</td></tr>
+          <tr>
+            <td>designation list</td>
+            <td class="num">{{ "loaded" if stats.sanctions_loaded else "NOT LOADED" }}</td>
+          </tr>
+        </tbody>
+      </table>
+      {% if not stats.sanctions_loaded %}
+        <p class="faint" style="margin-top:10px">
+          Without the designation list, every designation predicate reports
+          <em>no connected source covers it</em> — a coverage statement, and not
+          the same thing as clean.
+        </p>
+      {% endif %}
+    </div>
+
+    <h2>By source</h2>
+    <div class="panel small">
+      <table>
+        <tbody>
+        {% for name, n in stats.by_source %}
+          <tr><td class="mono">{{ name }}</td><td class="num">{{ "{:,}".format(n) }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </aside>
+</div>
+{% endblock %}

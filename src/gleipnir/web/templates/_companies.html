@@ -1,0 +1,43 @@
+{# The company list. Unsorted by anything interpretive: alphabetical, because a
+   ranked list of companies is itself a judgement about which to open first. #}
+<h2>
+  {% if q %}{{ rows|length }} of {{ total }} companies{% else %}{{ total }} companies{% endif %}
+  <span class="count">— alphabetical, unranked</span>
+</h2>
+
+{% if not rows %}
+  <p class="empty">Nothing in the store matches “{{ q }}”.</p>
+{% else %}
+<table>
+  <thead>
+    <tr>
+      <th>CVR</th>
+      <th>Name</th>
+      <th>Legal form</th>
+      <th>Registered</th>
+      <th>Status now</th>
+      <th>Registrar’s act</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for r in rows %}
+    <tr>
+      <td class="num"><a href="/c/{{ r.cvr }}">{{ r.cvr }}</a></td>
+      <td>
+        {% if r.readable %}{{ r.name or "—" }}
+        {% else %}<span class="faint">payload did not parse — open it anyway</span>{% endif %}
+      </td>
+      <td class="soft">{{ r.legal_form or "" }}</td>
+      <td class="num soft">{{ r.founded or "" }}</td>
+      <td class="soft">{{ r.status or "" }}</td>
+      <td class="num">
+        {% if r.event %}
+          <span class="soft">{{ r.event }}</span>
+          <span class="faint">{{ r.event_status }}</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

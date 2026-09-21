@@ -1,0 +1,28 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+raw/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Pasted screenshots: these have carried live credentials.
+Pasted image*.png
+*.pasted.png
+
+# Credential drops. These have carried live keys.
+EPOkey.txt
+*.key.txt
+
+# Only code is published. Docs, research output and third-party papers stay
+# local until the research-output architecture is decided.
+docs/
+research/
+ROADMAP.md
+
+# Local Claude Code state.
+.claude/

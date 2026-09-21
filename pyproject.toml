@@ -1,0 +1,33 @@
+[project]
+name = "gleipnir"
+version = "0.1.0"
+description = "Screening for concealed ownership and control of Danish corporate assets"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "lxml>=5.2",          # website extraction
+    "dnspython>=2.6",     # DNS observations and IP-to-ASN over DNS
+]
+
+[project.optional-dependencies]
+oracle = ["anthropic>=1.0"]   # only needed to run the bounded EXTRACT calls
+web = [                       # the analyst workbench; the library needs none of it
+    "fastapi>=0.110",
+    "jinja2>=3.1",
+    "uvicorn>=0.29",
+    "python-multipart>=0.0.9",   # form posts: the analyst and reviewer writes
+]
+dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "httpx>=0.27"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gleipnir"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

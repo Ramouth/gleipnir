@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Evidence {{ content_hash[:12] }} · Gleipnir{% endblock %}
+
+{% block body %}
+<h1>Evidence</h1>
+<p class="lede">
+  The bytes a line on a company page was projected from, and every time we
+  fetched them. Nothing downstream is authoritative — claims, predicates and
+  findings are all projections of this.
+</p>
+<p><code class="hash">{{ content_hash }}</code></p>
+
+<h2>Fetch log <span class="count">({{ fetches|length }} record{{ "" if fetches|length == 1 else "s" }})</span></h2>
+{% if fetches %}
+<table>
+  <thead>
+    <tr><th>Fetched</th><th>Source</th><th>Resource</th><th>ID</th><th>HTTP</th><th>Bytes</th><th>Request</th></tr>
+  </thead>
+  <tbody>
+  {% for f in fetches %}
+    <tr>
+      <td class="num soft">{{ f.fetched_at[:19].replace("T", " ") }}</td>
+      <td class="mono">{{ f.source }}</td>
+      <td class="mono soft">{{ f.resource_type }}</td>
+      <td class="mono"><a href="/c/{{ f.resource_id }}">{{ f.resource_id }}</a></td>
+      <td class="num">{{ f.http_status }}</td>
+      <td class="num soft">{{ "{:,}".format(f.byte_len) }}</td>
+      <td class="mono small faint">{{ f.request_params }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<p class="small faint" style="margin-top:8px">
+  The same bytes fetched twice occupy one blob and two log lines: “we asked again
+  and nothing had changed” is itself a fact, and it is what bounds when a value
+  was still true.
+</p>
+{% else %}
+  <p class="empty">No fetch record carries this hash.</p>
+{% endif %}
+
+<h2>
+  Payload
+  <span class="count">
+    {{ "{:,}".format(size) }} bytes{% if truncated %} — showing the first
+    {{ "{:,}".format(body|length) }} only{% endif %}
+  </span>
+</h2>
+{% if truncated %}
+  <p class="panel small" style="border-color:var(--amber);margin-bottom:10px">
+    This payload is larger than the viewer will render. What follows is the
+    beginning of the file and not the document — read the blob on disk before
+    citing anything from it.
+  </p>
+{% endif %}
+{% if body %}
+  <pre class="blob">{{ body }}</pre>
+{% else %}
+  <p class="empty">No blob on disk under this hash.</p>
+{% endif %}
+{% endblock %}

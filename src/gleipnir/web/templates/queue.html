@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% set page_id = 'queue' %}
+{% block title %}Review queue · Gleipnir{% endblock %}
+
+{% block body %}
+<h1>Review queue</h1>
+<p class="lede">
+  Bounded passages that an approved question retrieved and that require a person
+  to read. A packet holds an attributable quote, its context, the retrieval
+  reason, the source hash and the mandate — and deliberately no label for
+  anyone’s religion, politics, beliefs or intent.
+</p>
+<p class="small faint">
+  The four outcomes create no claim and no finding. They route the packet, and
+  that is all they do.
+</p>
+
+<h2>Pending <span class="count">({{ pending|length }})</span></h2>
+{% if not pending %}
+  <p class="empty">Nothing awaiting review.</p>
+{% endif %}
+
+{% for content_hash, p in pending %}
+  <div class="panel" style="margin-bottom:12px">
+    <div class="fact-head">
+      <span class="fact-raw">{{ p.source }}</span>
+      <span class="mono small">{{ p.contract_id }} @ {{ p.contract_version }}</span>
+      <a class="small" href="/c/{{ p.subject_key }}">{{ p.subject_key }}</a>
+      <span class="small faint">mandate {{ p.mandate_id }}</span>
+    </div>
+
+    <blockquote style="margin:12px 0 6px;padding-left:12px;border-left:3px solid var(--rule-strong)">
+      {{ p.quote }}
+    </blockquote>
+    <details>
+      <summary class="small faint">bounded context as retrieved</summary>
+      <p class="small soft" style="white-space:pre-wrap">{{ p.context }}</p>
+    </details>
+    <p class="small faint" style="margin:8px 0 0">
+      retrieved because: {{ p.reason }} ·
+      <a href="/evidence/{{ p.raw_ref }}">source {{ p.raw_ref[:12] }}</a> ·
+      created {{ p.created_at[:19].replace("T", " ") }}
+    </p>
+
+    <form action="/queue/{{ content_hash }}" method="post" style="margin-top:12px">
+      <div class="row">
+        <div>
+          <label for="reviewer-{{ content_hash[:8] }}">Reviewer</label>
+          <input type="text" id="reviewer-{{ content_hash[:8] }}" name="reviewer" required>
+        </div>
+        <div>
+          <label for="outcome-{{ content_hash[:8] }}">Outcome</label>
+          <select id="outcome-{{ content_hash[:8] }}" name="outcome">
+            {% for o in outcomes %}<option value="{{ o.value }}">{{ o.value.replace("_", " ") }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <label for="rationale-{{ content_hash[:8] }}">Rationale</label>
+      <textarea id="rationale-{{ content_hash[:8] }}" name="rationale" required></textarea>
+      <p style="margin-top:10px"><button type="submit">Record review</button></p>
+    </form>
+  </div>
+{% endfor %}
+
+{% if closed %}
+  <h2>Reviewed <span class="count">({{ closed|length }}) — append-only; the pending packet is still on file</span></h2>
+  <table>
+    <thead><tr><th>Reviewed</th><th>Reviewer</th><th>Outcome</th><th>Subject</th><th>Rationale</th></tr></thead>
+    <tbody>
+    {% for content_hash, p in closed %}
+      <tr>
+        <td class="num soft">{{ (p.reviewed_at or "")[:10] }}</td>
+        <td>{{ p.reviewer }}</td>
+        <td class="mono">{{ p.outcome.value.replace("_", " ") }}</td>
+        <td class="num"><a href="/c/{{ p.subject_key }}">{{ p.subject_key }}</a></td>
+        <td class="soft">{{ p.rationale }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

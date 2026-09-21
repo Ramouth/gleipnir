@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Gleipnir{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  {# htmx is an enhancement only: every control below is a plain link or form
+     and works unchanged when this script does not load. #}
+  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="/">GLEIPNIR <span>workbench</span></a>
+    <nav class="top-nav">
+      <a href="/" {% if page_id == 'index' %}aria-current="page"{% endif %}>companies</a>
+      <a href="/queue" {% if page_id == 'queue' %}aria-current="page"{% endif %}>review queue</a>
+      <a href="/agents" {% if page_id == 'agents' %}aria-current="page"{% endif %}>who may do what</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+{% block body %}{% endblock %}
+</main>
+
+<footer class="foot">
+  Reads the raw store. Spends no registry quota — the workbench holds a budget of
+  zero, so nothing on this page can bill the CVR agreement.
+  Findings require a ground, an authority and a citation; structure never colours
+  anything.
+</footer>
+</body>
+</html>

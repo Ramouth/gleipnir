@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% block title %}{{ sheet.cvr }} {{ sheet.name }} · Gleipnir{% endblock %}
+
+{% block body %}
+<div class="subject">
+  <div style="flex:1 1 320px">
+    <h1>{{ sheet.name or "—" }}</h1>
+    <p class="lede">
+      <span class="mono">CVR {{ sheet.cvr }}</span> ·
+      {{ sheet.legal_form }} ·
+      registered {{ sheet.founded }} ·
+      <a class="mono small" href="/evidence/{{ sheet.blob }}">blob {{ sheet.blob[:12] }}</a>
+    </p>
+  </div>
+  <div>
+    <span class="badge c-{{ screen.colour }}">{{ screen.colour }}</span>
+  </div>
+</div>
+
+<p class="asof">
+  register read as of <strong>{{ sheet.as_of }}</strong> — {{ sheet.as_of_reason }}
+</p>
+
+<form class="row" action="/c/{{ sheet.cvr }}" method="get" style="max-width:420px;margin-top:12px">
+  <div>
+    <label for="as_of">Read at another date</label>
+    <input type="date" id="as_of" name="as_of" value="{{ as_of_param or sheet.as_of }}">
+  </div>
+  <button type="submit">Re-read</button>
+</form>
+
+{# ── findings ─────────────────────────────────────────────────────────── #}
+<h2>Findings <span class="count">— red requires direct documented involvement</span></h2>
+{% if screen.findings %}
+  {% for f in screen.findings %}
+    <div class="panel" style="margin-bottom:8px">
+      <div class="fact-head">
+        <span class="badge c-{{ f.colour }}">{{ f.colour }}</span>
+        <span class="mono small">{{ f.ground or "" }}</span>
+        {% if f.qualifier %}<span class="fact-raw">{{ f.qualifier }}</span>{% endif %}
+      </div>
+      <p style="margin:8px 0 4px">{{ f.statement }}</p>
+      <p class="small faint">
+        {{ f.authority }}{% if f.recorded_on %}, {{ f.recorded_on }}{% endif %}
+        {% if f.citation %} · {{ f.citation }}{% endif %}
+        {% if f.evidence_ref %} · <a href="/evidence/{{ f.evidence_ref }}">evidence</a>{% endif %}
+      </p>
+    </div>
+  {% endfor %}
+{% else %}
+  <p class="empty">
+    None — no designation, adjudicated fraud, counterparty litigation or public
+    support on record. Structure never colours anything.
+  </p>
+{% endif %}
+
+{# ── registry status ──────────────────────────────────────────────────── #}
+<h2>Registry status, as filed</h2>
+<table>
+  <thead><tr><th>From</th><th>To</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for frm, to, value in sheet.status_history %}
+    <tr>
+      <td class="num">{{ frm }}</td>
+      <td class="num soft">{{ to or "open" }}</td>
+      <td>{{ value }}</td>
+      <td class="faint small">{% if sheet.covers(frm, to) %}← the as-of date falls here{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="4" class="empty">No status history filed.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{# ── the four sections ────────────────────────────────────────────────── #}
+{% for section in sheet.sections %}
+  <h2>
+    {{ section.heading }}
+    <span class="count">({{ section.count }} of {{ section.of_total }})</span>
+  </h2>
+  {% for row in section.rows %}
+    <div class="fact">
+      <div class="fact-head">
+        <span class="fact-q">{{ row.question }}</span>
+        {% if row.raw is not none %}<span class="fact-raw">{{ row.raw }}</span>{% endif %}
+      </div>
+      <div class="fact-ev">{{ row.evidence }}</div>
+      {% for line in row.comparator %}
+        <div class="comparator{% if line.startswith('no ') %} no-comparator{% endif %}">{{ line }}</div>
+      {% endfor %}
+      <div class="pred">{{ row.predicate }}</div>
+    </div>
+  {% endfor %}
+{% endfor %}
+
+{# ── the rule layer ───────────────────────────────────────────────────── #}
+{% if sheet.escalate %}
+  <h2>
+    Next questions <span class="count">({{ sheet.escalate|length }}) — the whole of
+    what a model is allowed to answer here</span>
+  </h2>
+  {% for rule, r in sheet.escalate %}
+    <div class="fact">
+      <div class="fact-head">
+        <span class="fact-raw">{{ rule.source }}</span>
+        <span class="fact-q">{{ rule.question }}</span>
+      </div>
+      <div class="fact-ev">raised by <span class="mono">{{ r.predicate }}</span>
+        {% if r.raw is not none %}<span class="fact-raw">{{ r.raw }}</span>{% endif %}</div>
+      <div class="comparator">would change it: {{ rule.would_change }}</div>
+    </div>
+  {% endfor %}
+{% endif %}
+
+{% if sheet.facts %}
+  <h2>Rated, and may never become a colour <span class="count">({{ sheet.facts|length }})</span></h2>
+  {% for rule, r in sheet.facts %}
+    <div class="fact">
+      <div class="fact-head"><span class="mono fact-q">{{ r.predicate }}</span></div>
+      <div class="fact-ev">{{ rule.holds_as }}</div>
+    </div>
+  {% endfor %}
+{% endif %}
+
+{% if sheet.ungoverned %}
+  <h2>Not covered by the rule table <span class="count">({{ sheet.ungoverned|length }}) — a gap in flags.py</span></h2>
+  {% for _, r in sheet.ungoverned %}
+    <div class="fact"><span class="mono">{{ r.predicate }} = {{ r.value }}</span></div>
+  {% endfor %}
+{% endif %}
+
+{# ── the chain ────────────────────────────────────────────────────────── #}
+<h2>The chain <span class="count">— facts, with what they look like in populations we have measured</span></h2>
+{% for c in screen.chain|sort(attribute='predicate') %}
+  <div class="fact">
+    <div class="fact-head">
+      <span class="mono fact-q">{{ c.predicate }}</span>
+      {% if c.value is not none %}<span class="fact-raw">{{ c.value }}</span>{% endif %}
+      {% if c.evidence_ref %}
+        <a class="small" href="/evidence/{{ c.evidence_ref }}">evidence</a>
+      {% endif %}
+    </div>
+    <div class="fact-ev">{{ c.statement }}</div>
+    <div class="comparator{% if c.comparator.ordinary is none %} no-comparator{% endif %}">{{ c.comparator.line() }}</div>
+  </div>
+{% else %}
+  <p class="empty">No chain facts at this date.</p>
+{% endfor %}
+
+{# ── gaps ─────────────────────────────────────────────────────────────── #}
+{% if screen.gaps %}
+  <h2>Gaps <span class="count">— where the account requires something no connected source shows</span></h2>
+  {% for g in screen.gaps %}
+    <div class="fact">
+      <div class="fact-head">
+        <span class="fact-raw">{{ g.strand }}</span>
+        <span class="fact-q">{{ g.trigger }}</span>
+        {% if g.is_agenda %}<span class="fact-raw">work, not a hole</span>{% endif %}
+      </div>
+      <div class="fact-ev">expects {{ g.expected }}</div>
+      <div class="fact-ev">found {{ g.found }}</div>
+      <div class="comparator{% if g.base_rate is none %} no-comparator{% endif %}">
+        {% if g.base_rate is none %}no measured rate{% else %}
+          {{ "%.1f"|format(g.base_rate * 100) }}% of Danish companies in the measured cohort{% if g.common %} — common{% endif %}
+        {% endif %}
+        ·
+        {% if g.closable_by %}could be closed by {{ g.closable_by }}
+        {% else %}consulted: {{ g.consulted|join(", ") or "none" }}{% endif %}
+      </div>
+    </div>
+  {% endfor %}
+{% endif %}
+
+{# ── coverage ─────────────────────────────────────────────────────────── #}
+{% if screen.unknowable %}
+  <h2>Not determinable from connected sources <span class="count">({{ screen.unknowable|length }})</span></h2>
+  {% for u in screen.unknowable %}
+    <div class="fact {% if u in screen.blocked_on %}blocking{% endif %}">
+      <div class="fact-ev">{{ u }}</div>
+      {% if u in screen.blocked_on %}
+        <div class="comparator">stopped the screen answering a question it exists to answer</div>
+      {% endif %}
+    </div>
+  {% endfor %}
+{% endif %}
+
+{% if sheet.register_note %}
+  <p class="panel small faint" style="margin-top:14px">{{ sheet.register_note }}</p>
+{% endif %}
+
+{# ── the human ────────────────────────────────────────────────────────── #}
+<h2 id="judgement">Analyst judgement <span class="count">— attributable, scoped, pinned, reversible</span></h2>
+
+<div class="cols">
+  <div>
+    {% if flag_status == 'stale' %}
+      <div class="panel" style="border-color:var(--amber)">
+        <span class="badge c-amber">stale</span>
+        <p style="margin:8px 0 0">
+          The flag {{ flag.analyst }} recorded on {{ flag.as_of }} was pinned to
+          documents that have since moved. It is <strong>reported and not
+          applied</strong> — the judgement covered the entity as it was.
+        </p>
+      </div>
+    {% elif flag_status == 'active' %}
+      <div class="panel">
+        <span class="badge c-green">in force</span>
+        <p style="margin:8px 0 4px">{{ flag.basis }}</p>
+        <p class="small faint">
+          {{ flag.analyst }}, {{ flag.as_of }} ·
+          suppresses {{ flag.suppresses|join(", ") or "nothing" }} ·
+          pinned to {{ flag.pinned|length }} document(s)
+        </p>
+      </div>
+    {% elif flag_status == 'withdrawn' %}
+      <div class="panel">
+        <span class="badge c-grey">withdrawn</span>
+        <p class="small faint" style="margin:8px 0 0">
+          {{ flag.analyst }} withdrew the judgement on {{ flag.as_of }}. The
+          withdrawal is a new record; nothing was deleted.
+        </p>
+      </div>
+    {% else %}
+      <p class="empty">No analyst has recorded a judgement about this company.</p>
+    {% endif %}
+
+    {% if observations|length > 1 or (observations and flag_status != 'active') %}
+      <h3>Every judgement on file</h3>
+      <table>
+        <thead><tr><th>Recorded</th><th>Analyst</th><th>Verdict</th><th>Basis</th><th>Scope</th></tr></thead>
+        <tbody>
+        {% for o in observations %}
+          <tr>
+            <td class="num soft">{{ o.observed_at[:10] }}</td>
+            <td>{{ o.analyst }}</td>
+            <td class="mono">{{ o.verdict }}</td>
+            <td>{{ o.basis }}</td>
+            <td class="mono small faint">{{ o.suppresses|join(", ") or "—" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <aside>
+    <div class="panel">
+      <h3 style="margin-top:0">Record a judgement</h3>
+      <p class="small faint">
+        Appended, never edited. It pins itself to every document on file for this
+        company right now, and goes stale on its own when any of them changes.
+      </p>
+      <form action="/c/{{ sheet.cvr }}/observation" method="post">
+        <label for="analyst">Who is judging</label>
+        <input type="text" id="analyst" name="analyst" required autocomplete="name">
+
+        <label for="verdict">Verdict</label>
+        <select id="verdict" name="verdict">
+          <option value="green">green — positive evidence, within a stated scope</option>
+          <option value="amber">amber — recorded, suppresses nothing</option>
+          <option value="withdraw">withdraw — retract the standing judgement</option>
+        </select>
+
+        <label for="basis">On what basis</label>
+        <textarea id="basis" name="basis" required
+                  placeholder="What was observed, in your own words."></textarea>
+
+        <label for="sources">Sources consulted (comma separated)</label>
+        <input type="text" id="sources" name="sources" placeholder="https://…, https://…">
+
+        <label>Predicates this judgement may suppress</label>
+        <p class="small faint" style="margin:0 0 6px">
+          Only what actually fired. A green flag on the officers does not
+          suppress a future designation hit.
+        </p>
+        <div class="checks">
+          {% for p in suppressable %}
+            <label><input type="checkbox" name="suppresses" value="{{ p }}"> {{ p }}</label>
+          {% else %}
+            <span class="faint small">Nothing fired at this date.</span>
+          {% endfor %}
+        </div>
+
+        <input type="hidden" name="as_of" value="{{ sheet.as_of }}">
+        <p style="margin-top:14px"><button type="submit">Append judgement</button></p>
+      </form>
+    </div>
+  </aside>
+</div>
+{% endblock %}
