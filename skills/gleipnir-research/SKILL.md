@@ -42,6 +42,9 @@ you fetch anything, write a frame and show it to the user:
   `"observable": false` when nothing could show it (a shot that missed leaves no trace).
   An explanation whose predictions are all unobservable, or none tested, is flagged
   "cannot be contradicted": its lack of contradicting evidence is cheap, not a strength.
+- Give a prediction `"made": YEAR` when you know when it was first made. Evidence from that
+  year or earlier was already known: a match to it is shown as `accommodated` (a fit), not
+  as a confirmed prediction. A novel prediction that came true weighs more than a fit.
 - Explanations that could all be true together are not rivals. What set it off, what
   made it possible, how it works and what keeps it going are different questions; so
   are who did it, who else took part and what was withheld afterwards.

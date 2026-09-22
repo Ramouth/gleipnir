@@ -911,3 +911,25 @@ def test_a_reply_to_a_critique_is_shown_but_does_not_settle_it(tmp_path):
     grid = '\n'.join(w.matrix_show()['grid'])
     row = grid.split('graded-trial', 1)[1].splitlines()[0]
     assert 'answered' in row and 'disputed' in row
+
+
+def test_a_prediction_made_after_the_evidence_is_a_fit_not_a_confirmation(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    sid = w.ingest('https://later.example/a', b'<html><body><p>Published in 2025, the Cytokine Study was '
+                   b'repeated with a larger sample and the same measurements of immune markers.</p></body></html>', 200)['id']
+    dated = w.cut(sid, 'Published in 2025', before=0, after=60)['passage']
+    f = framed()
+    f['questions'][0]['explanations'][1]['predictions'][0]['made'] = 'long ago'
+    assert 'made' in w.frame(f)['refused'][0]['why']
+    m = predicted(p)
+    m['evidence'][1].update(passage=dated, words='the Cytokine Study was repeated', year=2025,
+                            n=None, case_definition=None)
+    for cell in m['evidence'][1]['cells'].values():
+        if 'words' in cell:
+            cell['words'] = 'the same measurements of immune markers'
+    for made, confirmed in ((2020, True), (2030, False)):
+        f['questions'][0]['explanations'][1]['predictions'][0]['made'] = made
+        w.frame(f)
+        assert w.matrix(m)['refused'] == []
+        h2 = next(e for e in w.matrix_show()['questions'][0]['explanations'] if e['id'] == 'H2')
+        assert bool(h2['confirmed_discriminating']) is confirmed and bool(h2.get('accommodated')) is not confirmed

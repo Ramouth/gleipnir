@@ -1242,12 +1242,16 @@ class Workspace:
                    else f'duplicate prediction {pid}: prediction ids are unique across the frame and the matrix'
                    if pid in seen
                    else 'a prediction says whether it is "observable": true if some evidence could show it, '
-                        'false if nothing could' if not isinstance(p.get('observable'), bool) else None)
+                        'false if nothing could' if not isinstance(p.get('observable'), bool)
+                   else '"made" is the year the prediction was first made, as a number (e.g. 1983)'
+                   if p.get('made') is not None and not (isinstance(p.get('made'), int) and 1000 <= p['made'] <= 2100)
+                   else None)
             if why:
                 refused.append({'explanation': owner, 'prediction': pid or '?', 'why': why})
             else:
                 seen.add(pid)
-                out.append({'id': pid, 'text': text, 'observable': p['observable']})
+                out.append({'id': pid, 'text': text, 'observable': p['observable'],
+                            **({'made': p['made']} if p.get('made') is not None else {})})
         return out
 
     def _frame_check(self, data) -> tuple[dict, list[dict]]:
@@ -1606,6 +1610,11 @@ class Workspace:
                     {'prediction': read[r]['tests'], 'row': tag(r)})
         confirmed = [r for r in con if read[r].get('tests') and not any(   # a rival that fits the row predicted it too
             by_id[r]['cells'].get(x, {}).get('reading') == 'consistent' for x in rivals)]
+        made = {p['id']: p.get('made') for x in mine for p in hyps[x].get('predictions') or []}
+        # evidence from the year the prediction was made, or earlier, was known to it: a fit, not a confirmation
+        accommodated = [r for r in confirmed if made.get(read[r]['tests']) and by_id[r].get('year')
+                        and by_id[r]['year'] <= made[read[r]['tests']]]
+        confirmed = [r for r in confirmed if r not in accommodated]
         predictions = [p for x in mine for p in hyps[x].get('predictions') or []]
         observable = {p['id'] for p in predictions if p['observable']}
         tested = {c.get('tests') for c in read.values()} & observable
@@ -1621,6 +1630,10 @@ class Workspace:
                  'inconsistent_disputed': inconsistent['disputed'],
                  **({'contradicted_predictions': contradicted} if any(contradicted.values()) else {}),
                  'confirmed_discriminating': [{'prediction': read[r]['tests'], 'row': tag(r)} for r in confirmed],
+                 **({'accommodated': [{'prediction': read[r]['tests'], 'row': tag(r), 'why':
+                                       f'the evidence ({by_id[r]["year"]}) was already there when the prediction '
+                                       f'was made ({made[read[r]["tests"]]})'} for r in accommodated]}
+                    if accommodated else {}),
                  'consistent': [tag(r) for r in con],
                  **({'narrowed_by': [tag(r) for r in narrowed]} if narrowed else {}),
                  'consistent_discriminating': [r for r in con if r in discriminating],
