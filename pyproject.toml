@@ -12,7 +12,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-oracle = ["anthropic>=1.0"]   # only needed to run the bounded EXTRACT calls
+oracle = ["anthropic>=1.0"]   # bounded extraction and alignment assessment
+nli = ["onnxruntime>=1.20,<2", "tokenizers>=0.21,<1"]  # pretrained CPU baseline
 web = [                       # the analyst workbench; the library needs none of it
     "fastapi>=0.110",
     "jinja2>=3.1",

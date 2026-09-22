@@ -1,0 +1,135 @@
+{
+  "version": "quotation-integrity/2",
+  "annotation": "Assistant-authored synthetic development cases; provisional labels, not an independently reviewed benchmark. Source support is labelled separately from full atom eligibility: a supported compound statement is still not atomic; the interrogative is excluded from support scoring.",
+  "cases": [
+    {
+      "id": "negation-faithful",
+      "category": "negation",
+      "context": "The experiment found no statistically significant excess in the measured events.",
+      "statement": "The experiment found no statistically significant excess in the measured events.",
+      "expected_eligible": true,
+      "expected_support": true
+    },
+    {
+      "id": "negation-reversed",
+      "category": "negation",
+      "context": "The experiment found no statistically significant excess in the measured events.",
+      "statement": "The experiment found a statistically significant excess in the measured events.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "uncertainty-faithful",
+      "category": "uncertainty",
+      "context": "The observations may indicate an additional spatial dimension, but the evidence is inconclusive.",
+      "statement": "The observations may indicate an additional spatial dimension.",
+      "expected_eligible": true,
+      "expected_support": true
+    },
+    {
+      "id": "uncertainty-lost",
+      "category": "uncertainty",
+      "context": "The observations may indicate an additional spatial dimension, but the evidence is inconclusive.",
+      "statement": "The observations establish an additional spatial dimension.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "scope-faithful",
+      "category": "scope",
+      "context": "The experiment excludes model X only for masses between 1 and 2 TeV.",
+      "statement": "The experiment excludes model X for masses between 1 and 2 TeV.",
+      "expected_eligible": true,
+      "expected_support": true
+    },
+    {
+      "id": "scope-widened",
+      "category": "scope",
+      "context": "The experiment excludes model X only for masses between 1 and 2 TeV.",
+      "statement": "The experiment excludes model X at every mass.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "attribution-faithful",
+      "category": "attribution",
+      "context": "The review describes Rao's hypothesis that extra dimensions exist; it offers no experimental confirmation.",
+      "statement": "The review attributes the hypothesis that extra dimensions exist to Rao.",
+      "expected_eligible": true,
+      "expected_support": true
+    },
+    {
+      "id": "attribution-lost",
+      "category": "attribution",
+      "context": "The review describes Rao's hypothesis that extra dimensions exist; it offers no experimental confirmation.",
+      "statement": "The review experimentally confirms that extra dimensions exist.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "context-retraction",
+      "category": "context",
+      "context": "An early draft stated: We detected an extra dimension. That statement was withdrawn after a calibration error was discovered. The corrected analysis found no such detection.",
+      "quote": "We detected an extra dimension.",
+      "statement": "The corrected analysis detected an extra dimension.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "synthetic-faithful",
+      "category": "scope",
+      "context": "The system uses two spatial dimensions and two synthetic dimensions encoded in atomic spin.",
+      "statement": "Two dimensions of the system are synthetic dimensions encoded in atomic spin.",
+      "expected_eligible": true,
+      "expected_support": true
+    },
+    {
+      "id": "synthetic-to-spatial",
+      "category": "scope",
+      "context": "The system uses two spatial dimensions and two synthetic dimensions encoded in atomic spin.",
+      "statement": "The system has four physical spatial dimensions.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "time-shift",
+      "category": "time",
+      "context": "The detector was inactive during 2020 and resumed measurements in 2021.",
+      "statement": "The detector collected measurements during 2020.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "quantity-shift",
+      "category": "quantity",
+      "context": "The experiment examined 20 samples.",
+      "statement": "The experiment examined 200 samples.",
+      "expected_eligible": false,
+      "expected_support": false
+    },
+    {
+      "id": "compound",
+      "category": "atomicity",
+      "context": "The apparatus weighs 20 kilograms. It uses a laser.",
+      "statement": "The apparatus weighs 20 kilograms and uses a laser.",
+      "expected_eligible": false,
+      "expected_support": true
+    },
+    {
+      "id": "question-not-proposition",
+      "category": "truth-evaluable",
+      "context": "The experiment tested gravitational attraction.",
+      "statement": "Does the experiment test gravitational attraction?",
+      "expected_eligible": false,
+      "expected_support": null
+    },
+    {
+      "id": "paraphrase-faithful",
+      "category": "paraphrase",
+      "context": "The study did not detect a departure from Newtonian gravity within its measurement sensitivity.",
+      "statement": "Within its measurement sensitivity, the study found no deviation from Newtonian gravity.",
+      "expected_eligible": true,
+      "expected_support": true
+    }
+  ]
+}

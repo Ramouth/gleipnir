@@ -320,6 +320,21 @@ ROLES: dict[str, Role] = {r.name: r for r in (
         ),
     ),
 
+    Role(
+        name="source_aligner", autonomy=Autonomy.MODEL,
+        module="gleipnir.oracle.AlignmentOracle, gleipnir.alignment",
+        mandate="Assess whether one contextualized source passage supports one atomic proposition.",
+        capabilities=frozenset({Capability.PROPOSE_EVIDENCE}),
+        consumes="one source-pinned context and one candidate atom, without generator reasoning",
+        produces="a proposed fidelity assessment; never a claim of real-world truth",
+        halts_on="one bounded call per pair, within an explicit call budget",
+        forbidden=(
+            (Capability.EMIT_CLAIM, "alignment proposes fidelity; it does not admit corporate claims"),
+            (Capability.ASSIGN_COLOUR, "source support is not a company risk judgment"),
+            (Capability.SPEND_QUOTA, "the caller controls the budget and supplied sources"),
+        ),
+    ),
+
     # ── the people ───────────────────────────────────────────────────────────
     Role(
         name="analyst",
@@ -376,7 +391,7 @@ ROLES: dict[str, Role] = {r.name: r for r in (
 #: the workbench renders.
 PIPELINE: tuple[str, ...] = (
     "planner", "acquirer", "extractor", "oracle", "investigator",
-    "evaluator", "rule", "analyst", "reviewer",
+    "evaluator", "rule", "source_aligner", "analyst", "reviewer",
 )
 
 
