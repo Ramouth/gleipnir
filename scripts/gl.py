@@ -71,6 +71,17 @@ def unused_flags(a) -> str | None:
             f'{", ".join(map(flag, USES[a.command])) or "no flags"} (and --store)') if extra else None
 
 
+def default_store() -> Path:
+    """The raw store: ./raw if there is one, else the nearest raw/ above this
+    script (a git worktree inside the repository shares the repository's store)."""
+    if Path('raw').is_dir():
+        return Path('raw')
+    for d in Path(__file__).resolve().parents:
+        if (d / 'raw').is_dir():
+            return d / 'raw'
+    return Path('raw')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('command')
@@ -81,7 +92,7 @@ def main():
     ap.add_argument('--undo', action='store_true', default=None)
     ap.add_argument('--basis'); ap.add_argument('--by'); ap.add_argument('--kind'); ap.add_argument('--note')
     ap.add_argument('--link-same-labels', action='store_true', default=None)
-    ap.add_argument('--store', type=Path, default=Path('raw'))
+    ap.add_argument('--store', type=Path, default=None)
     a = ap.parse_args()
     if why := unused_flags(a):
         print(json.dumps({'refused': why}), file=sys.stderr)
@@ -95,7 +106,7 @@ def main():
         return
     if not a.args:
         ap.error('a workspace directory is required')
-    ws = Workspace(Path(a.args[0]), a.store)
+    ws = Workspace(Path(a.args[0]), a.store or default_store())
     rest = a.args[1:]
 
     def atoms_arg():

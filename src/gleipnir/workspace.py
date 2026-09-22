@@ -516,7 +516,8 @@ class Workspace:
         if not s:
             raise ToolError(f'unknown source {source_id}; fetch it first')
         if not self.store.path_of(s['sha256']).exists():
-            raise ToolError(f'{source_id}: raw bytes missing from the store')
+            raise ToolError(f'{source_id}: raw bytes missing from the store at {self.store.root.resolve()}: '
+                            'pass --store with the store this workspace was fetched into')
         key = (s['sha256'], s['url'])
         if self._fetched is None or key not in self._fetched:  # the fetch log, read once unless it grew
             self._fetched = {(f.content_hash, f.resource_id) for f in self.store.fetches() if f.http_status == 200}
