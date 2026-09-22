@@ -120,6 +120,25 @@ class PretrainedNLIBackend:
         tokenizer.no_padding()
         self._session, self._tokenizer = session, tokenizer
 
+    def classify(self, premise: str, hypothesis: str) -> dict[str, float]:
+        """Entailment, contradiction and neutral probabilities for one pair."""
+        from gleipnir.agents import Capability, require
+        require("source_aligner", Capability.PROPOSE_EVIDENCE)
+        import numpy as np
+        self._load()
+        encoded = self._tokenizer.encode(premise, hypothesis)
+        if len(encoded.ids) > MAX_TOKENS:
+            raise ContextWindowExceeded(f'pair has {len(encoded.ids)} tokens; maximum {MAX_TOKENS}')
+        available = {'input_ids': [encoded.ids], 'attention_mask': [encoded.attention_mask],
+                     'token_type_ids': [encoded.type_ids]}
+        inputs = {i.name: np.asarray(available[i.name], dtype=np.int64)
+                  for i in self._session.get_inputs()}
+        logits = self._session.run(None, inputs)[0][0]
+        if len(logits) != 3 or not all(math.isfinite(float(x)) for x in logits):
+            raise ValueError('invalid NLI output')
+        shifted = [math.exp(float(x)-float(max(logits))) for x in logits]
+        return {label: value/sum(shifted) for label, value in zip(self.labels, shifted)}
+
     def assess(self, pair: AlignmentInput) -> Judgment:
         from gleipnir.agents import Capability, require
         require("source_aligner", Capability.PROPOSE_EVIDENCE)

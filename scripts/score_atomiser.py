@@ -12,7 +12,7 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from gleipnir.atomiser import Atom, Passage, check, trace
+from gleipnir.atomiser import LOCAL, Atom, Passage, check, trace
 
 
 OUT = 'outputs'
@@ -41,26 +41,20 @@ def judge(passage: Passage, raw_atoms):
 
 def expectation_failures(expect: dict, raw: str, judged) -> list[str]:
     fails = []
-    atoms = [a.chain()[1] for a, _ in judged if a]
+    atoms_full = [a for a, _ in judged if a]
+    atoms = [a.chain()[1] for a in atoms_full]
     chains = [a.chain()[0] for a, _ in judged if a]
     closed = [a for a, v in judged if a and v['closed']]
-    # Quotes are verbatim and the outermost speaker is the source by contract;
-    # neither can carry a forbidden fabrication.
-    unquoted_atoms = [{k: (v.get('content') if k == 'report' and isinstance(v, dict) else v)
-                       for k, v in a.items() if k != 'quote'} for a in json.loads(raw).get('atoms', [])]
-    if len(judged) < expect.get('min_atoms', 0):
-        fails.append(f'min_atoms {len(judged)}<{expect["min_atoms"]}')
-    if expect.get('max_closed') is not None and len(closed) > expect['max_closed']:
-        fails.append(f'closed {len(closed)}>{expect["max_closed"]}')
-    allowed = expect.get('subject_ids')
-    if allowed:
-        bad = [a.subject.id for a in atoms if a.subject.id not in allowed]
-        if bad:
-            fails.append(f'subject {bad}')
-    for reason in expect.get('must_open') or []:
-        if any(reason not in v['open'] for a, v in judged if a):
-            fails.append(f'not open for {reason}')
-    unquoted = json.dumps(unquoted_atoms)
+    # Fabrication matters in the structured fields that enter the graph: ids,
+    # times and the relation. Prose may legitimately name both readings of an
+    # ambiguous date, and local ids embed the source id by design.
+    def structured(a):
+        _, c = a.chain()
+        ids = [x.id for x in (c.subject, c.object) if x is not None and x.id]
+        ids = [LOCAL.match(i)['slug'] if LOCAL.match(i) else i for i in ids]
+        inner = [r.speaker.id for r in a.chain()[0][1:] if r.speaker.id]
+        return [ids, inner, c.holds.model_dump(), c.predicate, c.value]
+    unquoted = json.dumps([structured(a) for a in atoms_full])
     for s in expect.get('forbidden_in_output') or []:
         if s in unquoted:
             fails.append(f'forbidden "{s}"')

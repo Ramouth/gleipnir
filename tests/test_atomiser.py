@@ -6,6 +6,7 @@ P = Passage(id='p', source_id='fixture:gazette', source_date='2025-03-01',
             text='Example Holding A/S (CVR 00000001) did not sell its stake in 2024, the chief executive said.')
 
 CLAIM = dict(subject={'id': 'cvr:00000001', 'label': 'Example Holding A/S'},
+             predicate='owns', value='its stake',
              statement='Example Holding A/S did not sell its stake in 2024.',
              holds={'start': '2024', 'end': '2024', 'basis': 'stated'},
              polarity='negated', modality='actual')
@@ -85,3 +86,35 @@ def test_trace_points_at_the_first_failing_step():
     assert t['first_failure'] == 'subject'
     assert (t['steps']['subject']['status'], t['steps']['time']['status']) == ('open', 'defect')
     assert trace(check(atom(), P))['first_failure'] is None
+
+
+def test_local_ids_are_rigid_inside_their_source_only():
+    p = Passage(id='p', source_id='arxiv:2406.19276v1', source_date='2024',
+                text='We find that VeriScore over-filters claims on AskDocsAI.')
+    claim = {'subject': {'id': 'local:arxiv:2406.19276v1#veriscore', 'label': 'VeriScore'},
+             'predicate': 'reduces', 'value': 'claims', 'statement': 'VeriScore over-filters claims (2024).',
+             'holds': {'end': '2024', 'basis': 'asserted'}, 'polarity': 'affirmed', 'modality': 'actual'}
+    own = lambda c: {'speaker': {'id': 'arxiv:2406.19276v1', 'label': 'paper'}, 'verb': 'reports', 'content': c}
+    ok = check(atom(outer=own(claim), quote='VeriScore over-filters claims'), p)
+    assert ok['closed_local'] and not ok['closed'] and ok['scope'] == 'local'
+    elsewhere = {**claim, 'subject': {'id': 'local:arxiv:9999.00001#veriscore', 'label': 'VeriScore'}}
+    assert 'subject_local_id_wrong_source' in check(atom(outer=own(elsewhere), quote='VeriScore over-filters claims'), p)['defects']
+    ghost = {**claim, 'subject': {'id': 'local:arxiv:2406.19276v1#factscore', 'label': 'FActScore'}}
+    assert 'subject_local_id_not_in_passage' in check(atom(outer=own(ghost), quote='VeriScore over-filters claims'), p)['defects']
+    no_relation = {**claim, 'predicate': None, 'value': None}
+    assert check(atom(outer=own(no_relation), quote='VeriScore over-filters claims'), p)['claim']['open'] == ['relation']
+
+
+def test_predicate_vocabulary():
+    assert 'predicate_not_in_vocabulary' in check(atom(predicate='can_be_inflated_by'), P)['defects']
+    assert check(atom(predicate='other_sold_quietly'), P)['claim']['open'] == ['relation']
+    assert check(atom(predicate='owns', value='its stake'), P)['claim']['closed']
+
+
+def test_version_numbers_in_local_ids_and_the_source_as_subject():
+    from gleipnir.atomiser import _id_defects
+    p = Passage(id='p', source_id='web:arxiv.org/8122d58e62', source_date='2025-11',
+                text='We evaluate Llama-3.1-70B-Instruct on the benchmark.')
+    assert _id_defects('local:web:arxiv.org/8122d58e62#llama-3.1-70b-instruct', p, p.text.casefold()) == []
+    assert _id_defects('web:arxiv.org/8122d58e62', p, p.text.casefold()) == []
+    assert _id_defects('web:arxiv.org/0000000000', p, p.text.casefold()) == ['not_rigid']

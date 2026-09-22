@@ -335,6 +335,21 @@ ROLES: dict[str, Role] = {r.name: r for r in (
         ),
     ),
 
+    Role(
+        name="atomiser", autonomy=Autonomy.MODEL,
+        module="gleipnir.atomiser (contract and checker)",
+        mandate="Split one passage into nested reports whose innermost claims are dated, attributed sentences.",
+        capabilities=frozenset({Capability.PROPOSE_EVIDENCE}),
+        consumes="one stored passage with its source id and date",
+        produces="proposed atoms; atomiser.check() decides what closes, and graph.py admits only atoms whose report verified",
+        halts_on="one bounded call per passage",
+        forbidden=(
+            (Capability.EMIT_CLAIM, "a proposed atom is checked in code; the model never admits its own output"),
+            (Capability.EVALUATE_PREDICATE, "splitting text is not concluding; truth is resolved across independent sources"),
+            (Capability.SPEND_QUOTA, "it reads passages it is given and fetches nothing"),
+        ),
+    ),
+
     # ── the people ───────────────────────────────────────────────────────────
     Role(
         name="analyst",
@@ -391,7 +406,7 @@ ROLES: dict[str, Role] = {r.name: r for r in (
 #: the workbench renders.
 PIPELINE: tuple[str, ...] = (
     "planner", "acquirer", "extractor", "oracle", "investigator",
-    "evaluator", "rule", "source_aligner", "analyst", "reviewer",
+    "atomiser", "evaluator", "rule", "source_aligner", "analyst", "reviewer",
 )
 
 
