@@ -369,6 +369,7 @@ class Workspace:
         self.store_dir = Path(store)
         self._texts: dict[str, str] = {}
         self._dates: dict[str, tuple] = {}
+        self._fetched: set | None = None
         self._classifier = classifier
 
     def classifier(self):
@@ -409,9 +410,10 @@ class Workspace:
             raise ToolError(f'unknown source {source_id}; fetch it first')
         if not self.store.path_of(s['sha256']).exists():
             raise ToolError(f'{source_id}: raw bytes missing from the store')
-        if source_id != f"web:{_host(s['url'])}/{s['sha256'][:10]}" or not any(
-                f.content_hash == s['sha256'] and f.resource_id == s['url'] and f.http_status == 200
-                for f in self.store.fetches()):
+        key = (s['sha256'], s['url'])
+        if self._fetched is None or key not in self._fetched:  # the fetch log, read once unless it grew
+            self._fetched = {(f.content_hash, f.resource_id) for f in self.store.fetches() if f.http_status == 200}
+        if source_id != f"web:{_host(s['url'])}/{s['sha256'][:10]}" or (s['sha256'], s['url']) not in self._fetched:
             raise ToolError(f'{source_id}: id, url and hash do not match a fetch record')
         return s
 
@@ -1327,6 +1329,7 @@ class Workspace:
 
     def status(self) -> dict:
         sources = self.sources()
+        evidence = self._evidence()
         verified, conflicts = 0, 0
         for sid in sources:
             try:
@@ -1356,7 +1359,7 @@ class Workspace:
                 'sources_without_origin': sum(1 for s in sources.values() if not self._origin(s)),
                 'sources_with_date_conflict': conflicts, 'passages': len(self.passages()),
                 'atoms_recorded': len(rows),
-                'atoms_without_evidence': sum(1 for r in rows if r['uid'] not in self._evidence()
+                'atoms_without_evidence': sum(1 for r in rows if r['uid'] not in evidence
                                               and r['status'] != 'withdrawn'),
                 'sources_without_accountability': sum(1 for s in sources.values() if not self._accountability(s)),
                 'atoms_with_open_steps': sum(1 for r in rows if r['open']),
