@@ -100,7 +100,9 @@ RELAY_ACTS = ('verifies', 'qualifies', 'disputes', 'distorts')
 EVIDENCE_STATUS = {'retracted': 'withdrawn by its authors or publisher',
                    'corrected': 'an erratum or correction changed it',
                    'reanalysed': 'its data were examined again, with a different result',
-                   'disputed': 'a published critique; give its kind'}
+                   'disputed': 'a published critique; give its kind',
+                   'answered': 'the authors published a reply to a critique (the row stays contested: a reply '
+                               'does not settle a dispute, but the reader should see it)'}
 DISPUTE_KINDS = {'engages_data': 'the critique works with the evidence itself: its data, methods or analysis',
                  'objection': 'the critique objects without engaging the data: interpretation, framing, interests'}
 CONTESTED = ('retracted', 'reanalysed', 'disputed')   # a row with one of these never counts as fully as a clean one

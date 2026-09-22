@@ -205,7 +205,7 @@ contested, weak or non-discriminating evidence. Examine each one.
    check; only this adds evidence), `qualifies`, `disputes`, `distorts` (says more than the
    evidence: "causes" for an association). `accountability WS SOURCE_ID CATEGORY --basis`:
    peer_reviewed, edited, institutional, interested_party, expert, unedited, aggregator.
-10. `evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why"`, STATUS retracted,
+10. `evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why"`, STATUS answered (a reply to a critique), retracted,
    corrected, reanalysed, or disputed with `--kind engages_data|objection`.
 11. `links WS` lists entity pairs that look alike across sources; `link WS A B --basis "..."`
    joins two you judge the same; `link WS A B --undo --note "why"` takes a link back.

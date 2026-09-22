@@ -900,3 +900,14 @@ def test_a_survey_is_not_asked_for_a_case_definition(tmp_path):
     w.matrix(m)
     grid = '\n'.join(w.matrix_show()['grid'])
     assert 'case definition not stated' not in grid.split('cytokine-study', 1)[1].splitlines()[0]
+
+
+def test_a_reply_to_a_critique_is_shown_but_does_not_settle_it(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = matrix(p)
+    m['evidence'][0]['status'].append({'status': 'answered', 'passage': p['trial'], 'note': 'the authors replied',
+                                       'words': 'graded exercise produced modest improvement'})
+    assert w.matrix(m)['refused'] == []
+    grid = '\n'.join(w.matrix_show()['grid'])
+    row = grid.split('graded-trial', 1)[1].splitlines()[0]
+    assert 'answered' in row and 'disputed' in row
