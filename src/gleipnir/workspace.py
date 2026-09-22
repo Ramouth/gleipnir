@@ -1579,7 +1579,22 @@ class Workspace:
                                          **({'tests': c['tests']} if c.get('tests') is not None else {}),
                                          **({'note': c['note']} if c.get('note') else {})}
             rows.append(row)
-        return {'questions': list(questions.values()), 'explanations': list(hyps.values()), 'evidence': rows}, refused
+        # the frame's look_for list is a checklist: each item names the row that covers it, or why none does
+        items = {x for q in frame['questions'] for x in q.get('look_for', [])}
+        row_ids, looked = {r['id'] for r in rows}, []
+        for e in data.get('looked_for') or [] if isinstance(data.get('looked_for'), list) else []:
+            e = e if isinstance(e, dict) else {}
+            item, row, missing = str(e.get('item') or '').strip(), e.get('row'), str(e.get('not_found') or '').strip()
+            why = (f'"{item}" is not a look_for item of the frame: copy it exactly' if item not in items
+                   else f'row {row} is not in the matrix' if row is not None and row not in row_ids
+                   else 'give the "row" that covers it, or "not_found" with why' if row is None and not missing
+                   else None)
+            if why:
+                refused.append({'looked_for': item or '?', 'why': why})
+            else:
+                looked.append({'item': item, **({'row': row} if row is not None else {'not_found': missing})})
+        return {'questions': list(questions.values()), 'explanations': list(hyps.values()), 'evidence': rows,
+                'looked_for': looked}, refused
 
     @staticmethod
     def _dated(value) -> bool:
@@ -1595,7 +1610,7 @@ class Workspace:
         own = {'questions': [q for q in m['questions'] if not q.get('framed')],
                'explanations': [{'id': h['id'], 'proposed_in': h['proposed_in']} if h.get('framed') else h
                                 for h in m['explanations'] if not h.get('framed') or h['proposed_in']],
-               'evidence': m['evidence']}
+               'evidence': m['evidence'], 'looked_for': m['looked_for']}
         self._save('matrix.json', own)
         self.log('matrix', questions=len(m['questions']), explanations=len(m['explanations']),
                  rows=len(m['evidence']), refused=len(refused))
@@ -1721,6 +1736,12 @@ class Workspace:
                    'cannot_be_contradicted': [e['id'] for e in per if 'cannot_be_contradicted' in e],
                    'not_yet_grounded': [e['id'] for e in per if e.get('not_yet_grounded')],
                    'newest_row_year': max(years, default=None)}
+            asked = next((f.get('look_for', []) for f in self._frame()[0]['questions'] if f['id'] == q['id']), [])
+            done = {e['item']: e for e in m.get('looked_for', [])}
+            if open_items := [x for x in asked if x not in done]:
+                out['look_for_open'] = open_items   # a checklist item with no row and no "not_found"
+            if not_found := [f'{x}: {done[x]["not_found"]}' for x in asked if 'not_found' in done.get(x, {})]:
+                out['look_for_not_found'] = not_found
             if len(ids) < 2:
                 out['warning'] = ('fewer than two explanations answer this question: nothing is weighed against '
                                   'anything. Find who answers it differently (other fields, critics, later studies, '

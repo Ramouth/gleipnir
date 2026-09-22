@@ -953,3 +953,20 @@ def test_quote_fetches_finds_and_cuts_in_one_call_and_reuses_a_stored_page(ws):
         w.quote('https://example.org/a', 'sold')
     with pytest.raises(ToolError, match='--find'):
         w.quote('https://example.org/a', 'words that are not on the page')
+
+
+def test_the_frames_look_for_list_is_a_checklist_the_matrix_must_answer(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.frame(framed())
+    m = predicted(p)
+    m['looked_for'] = [{'item': 'the newest trial of graded exercise', 'row': 'graded-trial'},
+                       {'item': 'a study nobody framed', 'row': 'graded-trial'}]
+    refused = w.matrix(m)['refused']
+    assert any('not a look_for item' in r['why'] for r in refused)
+    q = w.matrix_show()['questions'][0]
+    assert q['look_for_open'] == ['the largest cohort with immune markers']
+    m['looked_for'] = m['looked_for'][:1] + [{'item': 'the largest cohort with immune markers',
+                                             'not_found': 'no cohort has measured immune markers'}]
+    w.matrix(m)
+    q = w.matrix_show()['questions'][0]
+    assert 'look_for_open' not in q and q['look_for_not_found'][0].startswith('the largest cohort')

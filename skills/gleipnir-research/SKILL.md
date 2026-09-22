@@ -19,7 +19,11 @@ you fetch anything, write a frame and show it to the user:
    explanations (include the ones a trusted source would not mention: critics, other
    fields, later studies); for each explanation, what it **predicts** that could be
    checked, marked `observable` or not; the evidence that would tell them apart; and
-   the newest and largest studies or official findings to look for.
+   what to look for: the newest and largest studies or official findings, AND the
+   landmark studies each side cites (the classic papers a reader expects to see weighed).
+   The `look_for` list is a checklist: the matrix answers each item with the row that
+   covers it, or `not_found` with why (`"looked_for": [{"item": "...", "row": "..."}]`);
+   `matrix WS` lists the items still open.
 3. `frame WS frame.json` stores it (refusing each defective part with what to do
    instead); `frame WS` shows it on one screen. Show that screen to the user and ask
    them to confirm or steer: a missing question, rival or prediction. Then research.
@@ -79,6 +83,9 @@ ground in a fifth of the time; the tools went deeper on fewer threads. So:
    Then a matrix row with its quote. A claim
    you could not verify stays in the answer marked `[not verified: why]`, never silently.
 3. The answer keeps the draft's breadth and the verified core's precision.
+4. A conclusion you compute from verified numbers (a ratio, a classification such as
+   "large increase", a trend) is not verified by its inputs: write the arithmetic in the
+   answer next to it, so a reader and a follow-up can re-check it.
 
 **A follow-up question** in the same workspace: add it to the frame (new question, its
 rivals and predictions) and run both passes again for it. Anything the follow-up inherits
