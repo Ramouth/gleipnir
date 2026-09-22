@@ -9,6 +9,8 @@
                 (the date of the document a copy reproduces: an archived copy of an older report)
   gl.py read    WS SOURCE_ID [--find "exact words"] [--around 1500]
   gl.py cut     WS SOURCE_ID "exact anchor words" [--before 200] [--after 600]
+  gl.py quote   WS URL "exact words" | WS QUOTES.json   (fetch if needed + find + cut, in one call;
+                the file is a list of {"url", "words"})
   gl.py check   WS ATOMS.json [--support]     (a JSON list of atoms; `-` reads stdin; the support
                 model is looked up in STORE/models, then raw/models here or above the package)
   gl.py add     WS ATOMS.json
@@ -51,7 +53,7 @@ from gleipnir.workspace import ToolError, Workspace
 
 #: The flags each command uses. Any other is refused, never silently ignored.
 USES = {'init': (), 'frame': (), 'fetch': ('publisher',), 'original': ('note', 'by'), 'read': ('find', 'around'),
-        'cut': ('before', 'after'), 'check': ('support',), 'add': (), 'origin': ('basis', 'by'),
+        'cut': ('before', 'after'), 'quote': ('before', 'after'), 'check': ('support',), 'add': (), 'origin': ('basis', 'by'),
         'rests': ('note', 'by', 'undo'), 'relay': ('note', 'by', 'undo'), 'accountability': ('basis', 'by'),
         'evidence': ('note', 'by', 'kind'), 'matrix': (), 'compare': ('link_same_labels',),
         'explain': ('note', 'by'), 'pending': (), 'passage': (), 'review': ('note', 'by'), 'links': (),
@@ -122,6 +124,18 @@ def main():
             out = ws.original(rest[0], rest[1], rest[2], a.note, a.by)
         elif a.command == 'read':
             print(ws.read(rest[0], a.find, a.around)); return
+        elif a.command == 'quote':
+            if len(rest) == 1 and rest[0].endswith('.json'):
+                out = []  # a file of {"url", "words"}: each quoted or refused on its own
+                for e in json.loads(Path(rest[0]).read_text()):
+                    try:
+                        q = ws.quote(e.get('url', ''), e.get('words', ''), a.before, a.after)
+                        out.append({k: v for k, v in q.items() if k != 'text'})
+                    except ToolError as err:
+                        out.append({'url': e.get('url'), 'refused': str(err)})
+            else:
+                out = ws.quote(rest[0], rest[1], a.before, a.after)
+                print(json.dumps({k: v for k, v in out.items() if k != 'text'}, ensure_ascii=False)); print(out['text']); return
         elif a.command == 'cut':
             out = ws.cut(rest[0], rest[1], a.before, a.after)
             print(json.dumps({k: v for k, v in out.items() if k != 'text'}, ensure_ascii=False)); print(out['text']); return

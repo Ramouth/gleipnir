@@ -74,7 +74,9 @@ ground in a fifth of the time; the tools went deeper on fewer threads. So:
 2. **Verify pass (deep, narrow).** Mark in the draft the claims the conclusion rests on:
    every row that discriminates, every number and date you state, every dispute or
    retraction, every institutional position you weigh. Only those go through Gleipnir:
-   `fetch WS URL URL ...` (several at once), `cut`, a matrix row with its quote. A claim
+   `quote WS URL "exact words"` fetches the page if needed, finds the words and cuts the
+   passage in one call; `quote WS quotes.json` does a list of `{"url", "words"}` at once.
+   Then a matrix row with its quote. A claim
    you could not verify stays in the answer marked `[not verified: why]`, never silently.
 3. The answer keeps the draft's breadth and the verified core's precision.
 

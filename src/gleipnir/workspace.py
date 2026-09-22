@@ -621,6 +621,20 @@ class Workspace:
                 f'{f"  original {original}" if original else ""}'
                 f'{"  DATE CONFLICT" if conflict else ""}\n{self._wrap(text[start:end])}')
 
+    def quote(self, url: str, words: str, before: int = 200, after: int = 600) -> dict:
+        """The verify step in one call: the page (fetched now, or the copy already
+        stored from the same address), the exact words found in it, and the
+        passage cut around them. The passage is the same as `fetch` + `cut`."""
+        if len(' '.join(words.split()).split()) < 3:
+            raise ToolError('quote at least three exact words of the page')
+        stored = [x for x in self.sources().values() if _canonical_url(x['url']) == _canonical_url(url)]
+        sid = stored[-1]['id'] if stored else self.fetch(url)['id']
+        try:
+            out = self.cut(sid, words, before, after)
+        except ToolError as e:
+            raise ToolError(f'{e} (source {sid}; use `read WS {sid} --find "..."` to see the text)') from None
+        return {**out, 'url': url}
+
     def cut(self, source_id: str, anchor: str, before: int = 200, after: int = 600) -> dict:
         """Cut a passage around the anchor, ending at the end of a sentence. A
         span already inside a stored passage returns that passage."""

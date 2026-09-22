@@ -943,3 +943,13 @@ def test_papers_in_one_working_paper_series_are_not_one_outlet(tmp_path):
                        200)['id']
         w.origin(sid, f'author-team-{n}', basis='different authors, different data', declared_by='test')
     assert w.status()['origin_warnings'] == []
+
+
+def test_quote_fetches_finds_and_cuts_in_one_call_and_reuses_a_stored_page(ws):
+    w, sid, pid = ws
+    out = w.quote('https://example.org/a', 'sold its stake in Example Shipping')
+    assert out['source_id'] == sid and 'sold its stake' in out['text']
+    with pytest.raises(ToolError, match='three exact words'):
+        w.quote('https://example.org/a', 'sold')
+    with pytest.raises(ToolError, match='--find'):
+        w.quote('https://example.org/a', 'words that are not on the page')
