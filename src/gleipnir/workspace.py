@@ -104,8 +104,8 @@ EVIDENCE_STATUS = {'retracted': 'withdrawn by its authors or publisher',
 DISPUTE_KINDS = {'engages_data': 'the critique works with the evidence itself: its data, methods or analysis',
                  'objection': 'the critique objects without engaging the data: interpretation, framing, interests'}
 CONTESTED = ('retracted', 'reanalysed', 'disputed')   # a row with one of these never counts as fully as a clean one
-READINGS = ('consistent', 'inconsistent', 'neutral', 'not_applicable')
-LETTERS = {'consistent': 'C', 'inconsistent': 'I', 'neutral': 'N', 'not_applicable': '-'}
+READINGS = ('consistent', 'inconsistent', 'narrows', 'neutral', 'not_applicable')
+LETTERS = {'consistent': 'C', 'inconsistent': 'I', 'narrows': 'R', 'neutral': 'N', 'not_applicable': '-'}
 IMPLICIT = 'Q'                      # the one question of a matrix that names none
 STALE_YEARS = 5
 STANCES = {'endorses': 'holds the explanation, or relies on the evidence for it',
@@ -1274,7 +1274,8 @@ class Workspace:
                     continue
                 hids.add(hid)
                 explanations.append({'id': hid, 'claim': claim, 'predictions': predictions})
-            questions.append({'id': qid, 'text': text, 'explanations': explanations, **lists})
+            questions.append({'id': qid, 'text': text, 'explanations': explanations, **lists,
+                              **({'rivals': False} if q.get('rivals') is False else {})})
         return {'questions': questions}, refused
 
     def _frame(self) -> tuple[dict, list[dict]]:
@@ -1309,6 +1310,9 @@ class Workspace:
                  'Confirm or steer: is a question, a rival explanation or a prediction missing?']
         for q in f['questions']:
             lines += ['', f'{q["id"]}  {q["text"]}']
+            if q.get('rivals') is False:
+                lines.append('  (answers may coexist: several can be true together, so none is weighed down '
+                             'by another\'s support)')
             if len(q['explanations']) < 2:
                 lines.append('  ! fewer than two explanations: nothing is weighed against anything')
             for h in q['explanations']:
@@ -1410,7 +1414,8 @@ class Workspace:
             raise ToolError('a matrix is a JSON object with "questions", "explanations" and "evidence" lists')
         frame, refused = self._frame()
         refused = [{'frame': True, **x} for x in refused]
-        questions = {q['id']: {'id': q['id'], 'text': q['text'], 'framed': True} for q in frame['questions']}
+        questions = {q['id']: {'id': q['id'], 'text': q['text'], 'framed': True,
+                               **({'rivals': False} if q.get('rivals') is False else {})} for q in frame['questions']}
         framed = {h['id']: {**h, 'answers': q['id'], 'proposed_in': None, 'framed': True}
                   for q in frame['questions'] for h in q['explanations']}
         preds = {p['id'] for h in framed.values() for p in h['predictions']}
@@ -1425,7 +1430,7 @@ class Workspace:
             if why:
                 refused.append({'question': qid or '?', 'why': why})
             elif qid not in questions:
-                questions[qid] = {'id': qid, 'text': text}
+                questions[qid] = {'id': qid, 'text': text, **({'rivals': False} if q.get('rivals') is False else {})}
         implicit = not questions          # no questions: one implicit question, as before
         hyps, mentioned = dict(framed), set()
         for h in data.get('explanations') or []:
@@ -1582,6 +1587,7 @@ class Workspace:
         rivals = [x for x in ids if x not in mine and h['id'] not in self._lineage(x, hyps)]
         inc = [r for r, c in read.items() if c['reading'] == 'inconsistent']
         con = [r for r, c in read.items() if c['reading'] == 'consistent']
+        narrowed = [r for r, c in read.items() if c['reading'] == 'narrows']
         split = lambda rs: {'undisputed': [tag(r) for r in rs if not contested[r]],
                             'disputed': [tag(r) for r in rs if contested[r]]}
         contradicted = {'undisputed': [], 'disputed': []}
@@ -1608,6 +1614,7 @@ class Workspace:
                  **({'contradicted_predictions': contradicted} if any(contradicted.values()) else {}),
                  'confirmed_discriminating': [{'prediction': read[r]['tests'], 'row': tag(r)} for r in confirmed],
                  'consistent': [tag(r) for r in con],
+                 **({'narrowed_by': [tag(r) for r in narrowed]} if narrowed else {}),
                  'consistent_discriminating': [r for r in con if r in discriminating],
                  'neutral': sum(1 for c in read.values() if c['reading'] == 'neutral'),
                  'not_applicable': sum(1 for c in read.values() if c['reading'] == 'not_applicable'),
@@ -1661,7 +1668,10 @@ class Workspace:
                 per.append(self._weigh(h, ids, by_hid, rows, contested, tag, discriminating[q['id']]))
             per = [e for _, e in sorted(per, key=lambda x: x[0])]
             years = [r['year'] for r in bearing if r['year'] is not None]
-            out = {'id': q['id'], 'text': q['text'], 'explanations': per, 'discriminates': disc,
+            out = {'id': q['id'], 'text': q['text'],
+                   **({'answers_may_coexist': 'several explanations can be true together: read each on its own '
+                       'evidence; the order is not a contest'} if q.get('rivals') is False else {}),
+                   'explanations': per, 'discriminates': disc,
                    'fits_all_alike': alike, 'not_yet_weighed': unweighed,
                    'resting_on_one_row': [e['id'] for e in per if len(e['consistent']) == 1],
                    'resting_on_no_row': [e['id'] for e in per if not e['consistent']],

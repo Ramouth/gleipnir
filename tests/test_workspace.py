@@ -860,3 +860,18 @@ def test_the_cli_refuses_a_flag_the_command_does_not_use(tmp_path):
     assert out.returncode == 2 and 'nothing to undo' in out.stderr
     out = gl('frame', ws, '--store', store)
     assert out.returncode == 2 and 'no frame yet' in out.stderr
+
+
+def test_a_partial_null_result_narrows_without_contradicting_and_answers_may_coexist(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = matrix(p)
+    m['questions'] = [{'id': 'Q1', 'text': 'What keeps it going?', 'rivals': False}]
+    for h in m['explanations']:
+        h['answers'] = 'Q1'
+    m['evidence'][1]['cells']['H1'] = {'reading': 'narrows', 'words': 'found altered cytokine profiles early in illness'}
+    assert w.matrix(m)['refused'] == []
+    q = w.matrix_show()['questions'][0]
+    assert 'answers_may_coexist' in q
+    h1 = next(e for e in q['explanations'] if e['id'] == 'H1')
+    assert h1['narrowed_by'] == ['cytokine-study'] and h1['inconsistent_undisputed'] == []
+    assert q['discriminates'] == []          # narrowing a range is not a contradiction

@@ -45,8 +45,29 @@ you fetch anything, write a frame and show it to the user:
 - Explanations that could all be true together are not rivals. What set it off, what
   made it possible, how it works and what keeps it going are different questions; so
   are who did it, who else took part and what was withheld afterwards.
+- Mark a question `"rivals": false` when its answers can all be true together (several
+  candidates may each supply part of the whole): each is then read on its own evidence.
+- A null result that excludes only part of what an explanation allows (a search that
+  covers part of a range) `narrows` it; it is not `inconsistent`. Otherwise the most
+  searched-for explanation looks the most contradicted.
 - Change the frame whenever you learn a new rival or prediction: submit the whole file
   again. The matrix inherits it.
+
+## Two passes: draft broad, then verify what the answer rests on
+
+Measured on 2026-09-23 (dark matter): the method alone, without the tools, covered more
+ground in a fifth of the time; the tools went deeper on fewer threads. So:
+
+1. **Draft pass (fast, broad).** With the frame in hand, read widely with your ordinary
+   web tools (search, page summaries). Cover every question and every rival, the history,
+   the newest results, the claimed findings that later faded. Write a draft answer and a
+   draft matrix in your notes. Do not fetch or cut yet.
+2. **Verify pass (deep, narrow).** Mark in the draft the claims the conclusion rests on:
+   every row that discriminates, every number and date you state, every dispute or
+   retraction, every institutional position you weigh. Only those go through Gleipnir:
+   `fetch WS URL URL ...` (several at once), `cut`, a matrix row with its quote. A claim
+   you could not verify stays in the answer marked `[not verified: why]`, never silently.
+3. The answer keeps the draft's breadth and the verified core's precision.
 
 ## The unit is the competing explanation, not the source
 

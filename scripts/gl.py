@@ -4,7 +4,7 @@
   gl.py frame   WS [FRAME.json]             (before any fetch: questions, rival explanations, their predictions,
                 what would discriminate, what to look for; with a file: validate and store it; without:
                 show it on one screen for the user to confirm or steer)
-  gl.py fetch   WS URL [--publisher NAME]
+  gl.py fetch   WS URL [URL...] [--publisher NAME]   (several URLs: each fetched or refused on its own)
   gl.py original WS SOURCE_ID YYYY[-MM[-DD]] "exact words that state it" --note "why"
                 (the date of the document a copy reproduces: an archived copy of an older report)
   gl.py read    WS SOURCE_ID [--find "exact words"] [--around 1500]
@@ -109,7 +109,15 @@ def main():
                 print('\n'.join(ws.frame_show()['screen'])); return
             out = ws.frame(json.loads(sys.stdin.read() if rest[0] == '-' else Path(rest[0]).read_text()))
         elif a.command == 'fetch':
-            out = ws.fetch(rest[0], a.publisher)
+            if len(rest) == 1:
+                out = ws.fetch(rest[0], a.publisher)
+            else:  # several URLs in one call: each fetched or refused on its own
+                out = []
+                for url in rest:
+                    try:
+                        out.append(ws.fetch(url, a.publisher))
+                    except ToolError as e:
+                        out.append({'url': url, 'refused': str(e)})
         elif a.command == 'original':
             out = ws.original(rest[0], rest[1], rest[2], a.note, a.by)
         elif a.command == 'read':
