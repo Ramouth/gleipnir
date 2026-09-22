@@ -133,11 +133,17 @@ def test_a_review_answer_counts_only_with_words_from_the_quote(tmp_path):
     w.init('q')
     sid = w.ingest('https://example.org/a', PAGE, 200)['id']
     pid = w.cut(sid, 'Example Holding A/S', before=0, after=80)['passage']
-    uid = w.add([atom(sid, pid)])['added'][0]['uid']
+    out = w.add([atom(sid, pid)])
+    uid = out['added'][0]['uid']
+    assert out['added'][0]['status'] == 'unreviewed' and 'awaiting_review' in out
+    assert [p['uid'] for p in w.pending()] == [uid] and w.pending()[0]['question']
     assert w.compare('Example Holding')[0]['rows'][0]['status'] == 'unreviewed'
     with pytest.raises(ToolError):
         w.review(uid, 'stated', 'words that are not in the quote')
+    with pytest.raises(ToolError):
+        w.review(uid, 'stated', 'sold')
     w.review(uid, 'stated', 'sold its stake in Example Shipping A/S in 2024', note='the quote says so')
+    assert w.pending() == []
     assert w.compare('Example Holding')[0]['rows'][0]['status'] == 'reviewed'
     w.review(uid, 'withdrawn')
     assert w.compare('Example Holding')[0]['sources'] == 0
@@ -152,3 +158,62 @@ def test_one_outlet_under_several_hosts_counts_once(tmp_path):
         w.add([atom(sid, pid)])
         w.origin(sid, f'outlet-{n}', basis='declared separately on purpose', declared_by='test')
     assert w.compare('Example Holding')[0]['declared_independent_origins'] == 1
+
+
+def test_many_outlets_resting_on_one_study_are_one_piece_of_evidence(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    uids = []
+    for n in range(3):
+        page = PAGE.replace(b'</body>', f'<p>According to the Registry Study {n}, it was so.</p></body>'.encode())
+        sid = w.ingest(f'https://outlet{n}.example/a', page, 200)['id']
+        pid = w.cut(sid, 'Example Holding A/S', before=0, after=80)['passage']
+        w.cut(sid, 'According to the Registry', before=0, after=40)
+        uids.append((sid, w.add([atom(sid, pid)])['added'][0]['uid']))
+        w.origin(sid, f'outlet-{n}', basis='separate newsrooms', declared_by='test')
+    g = w.compare('Example Holding')[0]
+    assert g['declared_independent_origins'] == 3 and g['independent_evidence'] == 0 and g['evidence_undeclared'] == 3
+    with pytest.raises(ToolError):
+        w.rests([uids[0][1]], 'registry-study', 'words that are not there')
+    with pytest.raises(ToolError):
+        w.rests([uids[0][1], uids[1][1]], 'registry-study', 'According to the Registry Study')
+    for sid, uid in uids:
+        w.rests([uid], 'registry-study', 'According to the Registry Study', note='each outlet cites it')
+    g = w.compare('Example Holding')[0]
+    assert g['declared_independent_origins'] == 3 and g['independent_evidence'] == 1
+    assert g['evidence'][0]['id'] == 'registry-study' and g['evidence'][0]['sources'] == 3
+    assert w.status()['atoms_without_evidence'] == 0
+    with open(w.root / 'evidence.jsonl', 'a') as f:
+        f.write(json.dumps({'uid': uids[2][1], 'evidence': 'forged', 'words': 'not in any passage'}) + '\n')
+    assert w.compare('Example Holding')[0]['independent_evidence'] == 1
+
+
+def test_relays_carry_weight_but_only_a_quoted_check_adds_evidence(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    notice = (b'<html><body><p>Example Holding A/S (CVR 00000001) sold its stake in Example Shipping A/S in 2024.</p>'
+              b'<p>According to the Registry Study, it was so. Our reporters reviewed the filing themselves.</p>'
+              b'<p>The Registry Study has been retracted by its authors.</p></body></html>')
+    sid = w.ingest('https://paper.example/a', notice, 200)['id']
+    pid = w.cut(sid, 'Example Holding A/S', before=0, after=80)['passage']
+    ctx = w.cut(sid, 'According to the Registry', before=0, after=140)['passage']
+    uid = w.add([atom(sid, pid)])['added'][0]['uid']
+    w.review(uid, 'stated', 'sold its stake in Example Shipping A/S', note='the paper states the sale itself')
+    w.rests([uid], 'registry-study', 'According to the Registry Study', note='the paper cites it')
+    with pytest.raises(ToolError):
+        w.accountability(sid, 'trustworthy', basis='feels right')
+    w.accountability(sid, 'edited', basis='newsroom with a corrections page')
+    g = w.compare('Example Holding')[0]
+    assert g['rows'][0]['act'] == 'endorses' and g['evidence'][0]['relays'] == {'endorses/edited': 1}
+    assert g['independent_evidence'] == 1
+    with pytest.raises(ToolError):
+        w.relay([uid], 'verifies', 'reviewed', note='x')
+    w.relay([uid], 'verifies', 'reviewed the filing themselves', note='their own check of the register')
+    g = w.compare('Example Holding')[0]
+    assert g['independent_evidence'] == 2 and g['rows'][0]['act'] == 'verifies'
+    with pytest.raises(ToolError):
+        w.evidence_status('registry-study', 'retracted', ctx, 'not in the passage at all', note='x')
+    w.evidence_status('registry-study', 'retracted', ctx, 'has been retracted by its authors', note='notice')
+    g = w.compare('Example Holding')[0]
+    assert g['independent_evidence'] == 1
+    assert [e['status'][0]['status'] for e in g['evidence'] if e['id'] == 'registry-study'] == ['retracted']

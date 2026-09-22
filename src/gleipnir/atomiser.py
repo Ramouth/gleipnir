@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gleipnir.claims import Predicate
 
-PROMPT_VERSION = 'atomise/2026-09-22.4'
+PROMPT_VERSION = 'atomise/2026-09-22.5'
 
 #: A date at the resolution the source supports: year, month or day.
 PARTIAL_DATE = r'^\d{4}(-\d{2}(-\d{2})?)?$'
@@ -58,6 +58,18 @@ RESEARCH_PREDICATES = {
     'fails_on': 'subject does not work on object',
     'is_sensitive_to': 'subject\'s result changes with object',
     'costs': 'value: money, time or compute',
+    # causes and associations: never write "causes" for what the source reports as an association
+    'causes': 'subject brings about object (the source says cause, not only association)',
+    'triggers': 'subject sets off onset or a flare of object, without being its whole cause',
+    'is_associated_with': 'subject co-occurs or correlates with object; no causal claim',
+    'is_risk_factor_for': 'subject raises the chance of object in a population',
+    'is_mechanism_of': 'subject is a biological or technical process through which object arises',
+    'is_marker_of': 'subject is a measurable sign of object (biomarker, test result)',
+    'treats': 'subject relieves or cures object (value: outcome, trial)',
+    'defines': 'subject (a criteria set, a standard) sets what counts as object',
+    # releases and versions
+    'is_released_on': 'value: the date subject is or was released',
+    'has_feature': 'subject includes object (a feature, a change)',
 }
 PREDICATES = frozenset(RESEARCH_PREDICATES) | frozenset(p.value for p in Predicate)
 

@@ -19,6 +19,10 @@ recomputed from them on use:
   `compare`, which rebuilds its graph from atoms.jsonl and never reads a saved one;
 - origin groups are declarations with a basis and an author; a source with no
   valid declaration never counts as independent;
+- the evidence an atom rests on (a study, a filing, an announcement) is a
+  declaration too, grounded in words from a stored passage of the atom's own
+  source: eight outlets reporting one study are eight reports of one piece of
+  evidence, and an atom with no evidence declared never counts as independent evidence;
 - a small-model flag reaches the LLM as a neutral question, never with a score;
 - source text is wrapped in markers carrying a fresh random nonce, so a page
   cannot close the data block and speak as the tool.
@@ -58,6 +62,17 @@ HIDDEN_STYLE = re.compile(r'display\s*:\s*none|visibility\s*:\s*hidden|opacity\s
                           r'font-size\s*:\s*0(px|em|rem|%)?\s*(;|$)|(left|top)\s*:\s*-\d{3,}px', re.I)
 TRACKING = re.compile(r'^(utm_\w+|fbclid|gclid|ref|via|amp)$', re.I)
 ARXIV_ORDER = 'arxiv identifier (month of first version)'
+RELAY_ACTS = ('verifies', 'qualifies', 'disputes', 'distorts')
+EVIDENCE_STATUS = ('retracted', 'corrected', 'disputed')
+ACCOUNTABILITY = {
+    'peer_reviewed': 'a journal or preprint server with review',
+    'edited': 'a newsroom or publisher with editors and a corrections practice',
+    'institutional': 'a government body, agency, register or professional society speaking officially',
+    'interested_party': 'the subject itself, its owner, funder or an advocacy group for one side',
+    'expert': 'a named author writing in their field, without editorial review',
+    'unedited': 'a blog, forum, social post or anonymous page',
+    'aggregator': 'a mirror, feed or site that republishes others without adding',
+}
 
 
 class ToolError(ValueError):
@@ -187,6 +202,13 @@ def _independent(origins: set[tuple[str, str]]) -> int:
         for g in groups[1:]:
             parent[root(g)] = root(groups[0])
     return len({root(g) for g in parent})
+
+
+def _states(words: str, quote: str) -> bool:
+    """A review answer names words of the quote: three or more, or the whole
+    quote. One word ("a", "not") can be found in any quote and says nothing."""
+    w, q = _ws(words), _ws(quote)
+    return bool(w) and w in q and (len(w.split()) >= 3 or w == q)
 
 
 def _uid(raw: dict) -> str:
@@ -394,7 +416,7 @@ class Workspace:
         added, refused = [], []
         for i, raw in enumerate(atoms):
             try:
-                _, _, verdict, _ = self._checked(raw)
+                atom, _, verdict, support = self._checked(raw)
             except (ValidationError, ToolError, ValueError) as e:
                 refused.append({'index': i, 'why': str(e).splitlines()[0]})
                 continue
@@ -408,9 +430,40 @@ class Workspace:
             stored.add(uid)
             with open(path, 'a') as f:
                 f.write(json.dumps({'uid': uid, **raw}, ensure_ascii=False) + '\n')
-            added.append({'index': i, 'uid': uid, 'open': verdict['open']})
+            flags = [support['flag']] if support and support.get('flag') else []
+            items = verdict['review'] + flags
+            added.append({'index': i, 'uid': uid, 'open': verdict['open'] + flags,
+                          'status': self._review_status(uid, atom, items)})
         self.log('add', added=len(added), refused=len(refused))
-        return {'added': added, 'refused': refused}
+        waiting = [a['uid'] for a in added if a['status'] == 'unreviewed']
+        return {'added': added, 'refused': refused,
+                **({'awaiting_review': f'{len(waiting)} atoms do not count in compare until you answer '
+                                       'their review (see `pending WS`)'} if waiting else {})}
+
+    def pending(self) -> list[dict]:
+        """Atoms that do not count in `compare` until their review is answered,
+        each with the question to answer and its quote."""
+        from gleipnir.support import review_request
+        out = []
+        path = self.root / 'atoms.jsonl'
+        for line in (open(path) if path.exists() else []):
+            raw = {k: v for k, v in json.loads(line).items() if k != 'uid'}
+            try:
+                atom, _, verdict, support = self._checked(raw)
+            except (ValidationError, ToolError, ValueError):
+                continue
+            if verdict['defects']:
+                continue
+            uid = _uid(raw)
+            flags = [support['flag']] if support and support.get('flag') else []
+            if self._review_status(uid, atom, verdict['review'] + flags) != 'unreviewed':
+                continue
+            q = review_request(atom, support) if support else None
+            out.append({'uid': uid, 'passage': atom.passage_id, 'items': verdict['review'] + flags,
+                        'question': q['question'] if q else 'Reread the sentence around the quote: does '
+                        'the atom say what the source says?', 'quote': atom.quote})
+        self.log('pending', n=len(out))
+        return out
 
     def origin(self, source_id: str, group: str, basis: str, declared_by: str) -> dict:
         if not basis.strip() or not group.strip():
@@ -446,13 +499,12 @@ class Workspace:
         for line in (open(path) if path.exists() else []):
             raw = {k: v for k, v in json.loads(line).items() if k != 'uid'}
             try:
-                atom, passage, verdict, _ = self._checked(raw)
+                atom, passage, verdict, support = self._checked(raw)
             except (ValidationError, ToolError, ValueError):
                 continue
             if verdict['defects']:
                 continue
             uid = _uid(raw)
-            _, _, _, support = self._checked(raw)
             flags = [support['flag']] if support and support.get('flag') else []
             status = self._review_status(uid, atom, verdict['review'] + flags)
             graph.add(atom, passage, {**verdict, 'open': verdict['open'] + flags}, uid)
@@ -470,6 +522,9 @@ class Workspace:
         two sources saying "the director" may mean two people.
         """
         graph, _ = self._graph()
+        evidence, ev_status = self._evidence(), self._evidence_status()
+        records, relays = self._records(), self._declared('relays.jsonl', 'act')
+        retracted = {e for e, st in ev_status.items() if any(x['status'] == 'retracted' for x in st)}
         by_label = graph.resolver({'same-label'} if link_same_labels else set())
         linked = self._linked()
         resolve = lambda x: linked(by_label(x)) if x else x
@@ -485,7 +540,8 @@ class Workspace:
         out = []
         for (subject, predicate), claims in groups.items():
             rows, values, origins = [], set(), set()
-            counted = []
+            counted, undeclared, by_value = [], set(), defaultdict(set)
+            per_ev = defaultdict(lambda: {'sources': set(), 'relays': defaultdict(int)})
             for c in claims:
                 value = c['value'] or (labels.get(c['object']) if c['object'] else None)
                 if c['object'] and resolve(c['object']) != c['object']:
@@ -493,20 +549,39 @@ class Workspace:
                 s = sources.get(c['source'])
                 origin = self._origin(s) if s else None
                 status = c.get('status', 'unreviewed')
+                uid = c.get('uid')
+                evs = evidence.get(uid, [])
+                act = self._act(uid, records.get(uid, {}), relays)
+                acc = self._accountability(s)
                 if status in ('clean', 'reviewed'):
                     values.add((value or '').casefold().strip())
                     counted.append(c['source'])
                     if origin:
                         origins.add((origin, _domain(s['url'])))
+                    if not evs:
+                        undeclared.add(c['source'])
+                    holds = c.get('holds') if isinstance(c.get('holds'), dict) else {}
+                    key = f"{(value or '').strip()} ({holds.get('end') or holds.get('start') or 'undated'})"
+                    for ev in evs:
+                        per_ev[ev]['sources'].add(c['source'])
+                        per_ev[ev]['relays'][f"{act}/{acc or 'accountability undeclared'}"] += 1
+                        if ev not in retracted:
+                            by_value[key].add(ev)
                 rows.append({'source': c['source'], 'published': self._date(s)[0] if s else None,
-                             'status': status,
-                             'origin': origin, 'value': value, 'polarity': c['polarity'],
-                             'hedge': c.get('hedge'), 'holds': c.get('holds'),
+                             'status': status, 'uid': uid, 'origin': origin, 'evidence': evs,
+                             'act': act, 'accountability': acc, 'value': value, 'polarity': c['polarity'],
+                             'hedge': c.get('hedge'), 'modality': c.get('modality'), 'holds': c.get('holds'),
                              'speakers': graph.speakers(c['id']),
                              'open': c.get('open', []), 'statement': c['statement']})
             group = {'subject': subject, 'label': labels.get(claims[0]['subject']),
                      'relation': predicate, 'sources': len(set(counted)),
                      'declared_independent_origins': _independent(origins),
+                     'independent_evidence': len([e for e in per_ev if e not in retracted]),
+                     'evidence_undeclared': len(undeclared),
+                     'evidence': [{'id': e, 'sources': len(v['sources']), 'relays': dict(v['relays']),
+                                   **({'status': ev_status[e]} if e in ev_status else {})}
+                                  for e, v in sorted(per_ev.items(), key=lambda x: -len(x[1]['sources']))],
+                     'evidence_per_value': {v: len(e) for v, e in by_value.items()},
                      'not_counted': sum(1 for r in rows if r['status'] not in ('clean', 'reviewed')),
                      'distinct_values': len(values), 'rows': rows}
             if why := why_differ([r for r in rows if r['status'] in ('clean', 'reviewed')]):
@@ -518,6 +593,165 @@ class Workspace:
         self.log('compare', query=query, groups=len(out))
         warnings = self._origin_warnings()
         return out + ([{'warnings': warnings}] if warnings else [])
+
+    # ── evidence and relays: what the reports rest on, and what each report adds ──
+    def _records(self) -> dict[str, dict]:
+        path = self.root / 'atoms.jsonl'
+        return {json.loads(l)['uid']: json.loads(l) for l in open(path)} if path.exists() else {}
+
+    def _in_source(self, words: str, sid: str) -> bool:
+        return any(_ws(words) in _ws(self.passage(p).text) for p, v in self.passages().items()
+                   if v.get('source_id') == sid)
+
+    def _one_source(self, uids: list[str]) -> str:
+        records, sources = self._records(), set()
+        for uid in uids:
+            if uid not in records:
+                raise ToolError(f'unknown atom {uid}')
+            sources.add(self.passage(records[uid]['passage_id']).source_id)
+        if len(sources) != 1:
+            raise ToolError('one call per source: the words must be in that source, so split the atoms by source')
+        return sources.pop()
+
+    def _declared(self, name: str, key: str) -> dict[str, dict]:
+        """uid -> latest valid declaration in `name`: three or more words found
+        in a passage of the atom's own source, and a note. Re-checked on use."""
+        records, out = self._records(), {}
+        for e in self._json_lines(name):
+            uid, words = e.get('uid'), e.get('words') or ''
+            if uid not in records or len(_ws(words).split()) < 3 or not (e.get('note') or '').strip() \
+                    or not (e.get(key) or '').strip():
+                continue
+            try:
+                if self._in_source(words, self.passage(records[uid]['passage_id']).source_id):
+                    out[uid] = e
+            except (ToolError, ValueError):
+                continue
+        return out
+
+    def _append(self, name: str, uids: list[str], **entry):
+        at = datetime.now(timezone.utc).isoformat(timespec='seconds')
+        with open(self.root / name, 'a') as f:
+            for uid in uids:
+                f.write(json.dumps({'uid': uid, **entry, 'at': at}, ensure_ascii=False) + '\n')
+
+    def rests(self, uids: list[str], evidence: str, words: str, note: str = '', declared_by: str = 'llm') -> dict:
+        """Declare that atoms rest on one piece of evidence (a study, a filing,
+        an announcement). Origins say which reports copy each other; this says
+        what the reports are about: many independent outlets can all rest on
+        one press release. The words must attribute it and stand in a stored
+        passage of the atoms' own source."""
+        evidence = evidence.strip()
+        if not evidence or len(_ws(words).split()) < 3 or not note.strip():
+            raise ToolError('evidence needs an id, at least three exact words that show what the atom rests on, '
+                            'and a --note saying why')
+        sid = self._one_source(uids)
+        if not self._in_source(words, sid):
+            raise ToolError(f'the words are not in any passage of {sid}: cut the passage that attributes it; '
+                            'for a primary source, quote the words that identify it (title, notice number)')
+        known = set(self._evidence_ids()) - {evidence}
+        self._append('evidence.jsonl', uids, evidence=evidence, words=words, note=note, declared_by=declared_by)
+        self.log('rests', uids=uids, evidence=evidence)
+        import difflib
+        near = difflib.get_close_matches(evidence, sorted(known), n=3, cutoff=0.75)
+        return {'uids': uids, 'evidence': evidence, 'source': sid,
+                **({'similar_ids': near, 'warning': 'a new evidence id close to existing ones: if it is the '
+                    'same study or document, declare again with the existing id'} if near else {})}
+
+    def relay(self, uids: list[str], act: str, words: str, note: str = '', declared_by: str = 'llm') -> dict:
+        """Declare what a source did with the evidence beyond passing it on.
+        Repeating and endorsing are read from the report chain; these are not:
+        verifies (its own check, quoted: becomes evidence of its own), qualifies,
+        disputes, distorts (its version says more or other than the evidence)."""
+        if act not in RELAY_ACTS:
+            raise ToolError(f'act must be one of {", ".join(RELAY_ACTS)}; repeating and endorsing '
+                            'are read from the atom itself')
+        if len(_ws(words).split()) < 3 or not note.strip():
+            raise ToolError('a relay act needs at least three exact words of the source that show it, and a --note')
+        sid = self._one_source(uids)
+        if not self._in_source(words, sid):
+            raise ToolError(f'the words are not in any passage of {sid}: cut the passage that shows it')
+        self._append('relays.jsonl', uids, act=act, words=words, note=note, declared_by=declared_by)
+        self.log('relay', uids=uids, act=act)
+        return {'uids': uids, 'act': act, 'source': sid,
+                **({'evidence': f'check:{sid}'} if act == 'verifies' else {})}
+
+    def evidence_status(self, evidence: str, status: str, passage_id: str, words: str, note: str,
+                        declared_by: str = 'llm') -> dict:
+        """Record that a piece of evidence was retracted, corrected or disputed,
+        with words from any stored passage that say so (a retraction notice,
+        an erratum, a published critique). Retracted evidence stops counting."""
+        if status not in EVIDENCE_STATUS:
+            raise ToolError(f'status must be one of {", ".join(EVIDENCE_STATUS)}')
+        if evidence not in self._evidence_ids():
+            raise ToolError(f'unknown evidence {evidence}: declare it with `rests` first')
+        if len(_ws(words).split()) < 3 or not note.strip() or _ws(words) not in _ws(self.passage(passage_id).text):
+            raise ToolError(f'name at least three exact words of {passage_id} that say so, and a --note')
+        entry = {'evidence': evidence, 'status': status, 'passage': passage_id, 'words': words, 'note': note,
+                 'declared_by': declared_by, 'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+        with open(self.root / 'evidence_status.jsonl', 'a') as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+        self.log('evidence_status', evidence=evidence, status=status)
+        return entry
+
+    def _evidence_status(self) -> dict[str, dict]:
+        out = {}
+        for e in self._json_lines('evidence_status.jsonl'):
+            try:
+                if e.get('status') in EVIDENCE_STATUS and len(_ws(e.get('words') or '').split()) >= 3 \
+                        and (e.get('note') or '').strip() and _ws(e['words']) in _ws(self.passage(e['passage']).text):
+                    out.setdefault(e['evidence'], []).append({'status': e['status'], 'passage': e['passage']})
+            except (ToolError, ValueError, KeyError):
+                continue
+        return out
+
+    def accountability(self, source_id: str, category: str, basis: str, declared_by: str = 'llm') -> dict:
+        """Who relays: declared once per source, with a basis. A category, not a
+        score: what the publisher stakes when it passes a claim on."""
+        if category not in ACCOUNTABILITY:
+            raise ToolError('category must be one of: ' + '; '.join(f'{k} ({v})' for k, v in ACCOUNTABILITY.items()))
+        if not basis.strip():
+            raise ToolError('accountability needs a basis: what on the page or about the publisher shows it')
+        self._source(source_id)
+        sources = self.sources()
+        sources[source_id]['accountability'] = {'category': category, 'basis': basis, 'declared_by': declared_by,
+                                                'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+        self._save('sources.json', list(sources.values()))
+        self.log('accountability', source=source_id, category=category)
+        return sources[source_id]['accountability']
+
+    @staticmethod
+    def _accountability(s: dict | None) -> str | None:
+        a = (s or {}).get('accountability') or {}
+        return a.get('category') if a.get('category') in ACCOUNTABILITY and (a.get('basis') or '').strip() else None
+
+    def _evidence_ids(self) -> set[str]:
+        return {e['evidence'].strip() for e in self._declared('evidence.jsonl', 'evidence').values()}
+
+    def _evidence(self) -> dict[str, list[str]]:
+        """atom uid -> the evidence it rests on: the latest valid `rests`, plus
+        the relay's own check where it verifies."""
+        out = defaultdict(list)
+        for uid, e in self._declared('evidence.jsonl', 'evidence').items():
+            out[uid].append(e['evidence'].strip())
+        records = self._records()
+        for uid, e in self._declared('relays.jsonl', 'act').items():
+            if e['act'] == 'verifies':
+                out[uid].append('check:' + self.passage(records[uid]['passage_id']).source_id)
+        return dict(out)
+
+    def _act(self, uid: str, record: dict, relays: dict) -> str:
+        """What the source did with the claim: a declared act, else read from
+        the report chain: its own voice endorses, a nested speaker attributes."""
+        if uid in relays and relays[uid]['act'] in RELAY_ACTS:
+            return relays[uid]['act']
+        chain, node = [], record.get('report')
+        while isinstance(node, dict) and 'speaker' in node:
+            chain.append(node.get('verb'))
+            node = node.get('content')
+        if chain and chain[0] == 'infers':
+            return 'inferred'
+        return 'endorses' if len(chain) == 1 else 'attributes'
 
     # ── review: answering what code cannot settle ────────────────────────────
     def review(self, uid: str, decision: str, words: str = '', note: str = '', declared_by: str = 'llm') -> dict:
@@ -531,8 +765,9 @@ class Workspace:
         if not record:
             raise ToolError(f'unknown atom {uid}')
         atom = Atom.model_validate({k: v for k, v in record.items() if k != 'uid'})
-        if decision == 'stated' and (not words.strip() or _ws(words) not in _ws(atom.quote)):
-            raise ToolError('name the exact words of the quote that state it')
+        if decision == 'stated' and not _states(words, atom.quote):
+            raise ToolError('name the exact words of the quote that state it: at least three words '
+                            '(or the whole quote), covering what the atom claims')
         entry = {'uid': uid, 'decision': decision, 'words': words, 'note': note, 'declared_by': declared_by,
                  'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
         with open(self.root / 'reviews.jsonl', 'a') as f:
@@ -548,8 +783,7 @@ class Workspace:
             return 'withdrawn'
         if not items:
             return 'clean'
-        if any(r['decision'] == 'stated' and (r.get('words') or '').strip()
-               and _ws(r['words']) in _ws(atom.quote) for r in answers):
+        if any(r['decision'] == 'stated' and _states(r.get('words') or '', atom.quote) for r in answers):
             return 'reviewed'
         return 'unreviewed'
 
@@ -676,5 +910,9 @@ class Workspace:
                 'islands': len(spans), 'islands_spanning_sources': sum(1 for v in spans.values() if len(v) > 1),
                 'sources_without_origin': sum(1 for s in sources.values() if not self._origin(s)),
                 'sources_with_date_conflict': conflicts, 'passages': len(self.passages()),
-                'atoms_recorded': len(rows), 'atoms_with_open_steps': sum(1 for r in rows if r['open']),
+                'atoms_recorded': len(rows),
+                'atoms_without_evidence': sum(1 for r in rows if r['uid'] not in self._evidence()
+                                              and r['status'] != 'withdrawn'),
+                'sources_without_accountability': sum(1 for s in sources.values() if not self._accountability(s)),
+                'atoms_with_open_steps': sum(1 for r in rows if r['open']),
                 'origin_warnings': self._origin_warnings()}
