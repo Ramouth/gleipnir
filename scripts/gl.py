@@ -12,14 +12,14 @@
   gl.py check   WS ATOMS.json [--support]     (a JSON list of atoms; `-` reads stdin; the support
                 model is looked up in STORE/models, then raw/models here or above the package)
   gl.py add     WS ATOMS.json
-  gl.py origin  WS SOURCE_ID GROUP --basis "why" [--by NAME]
+  gl.py origin  WS SOURCE_ID GROUP --basis "why" [--by NAME]   (or WS FILE.json: [{"source","group","basis"}])
                 (which reports copy each other: same text, same outlet)
   gl.py rests   WS EVIDENCE "exact words that attribute it" ATOM_UID... --note "why"
                 (what the atoms rest on: one study, filing or announcement; atoms of one source per call;
                  declaring again adds evidence; --undo "" takes one back, with --note)
   gl.py relay   WS ACT "exact words" ATOM_UID... --note "why"
                 (ACT: verifies, qualifies, disputes, distorts; repeating and endorsing are read from the atom)
-  gl.py accountability WS SOURCE_ID CATEGORY --basis "why"
+  gl.py accountability WS SOURCE_ID CATEGORY --basis "why"   (or WS FILE.json: [{"source","category","basis"}])
                 (CATEGORY: peer_reviewed, edited, institutional, interested_party, expert, unedited, aggregator)
   gl.py evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why" [--kind KIND]
                 (STATUS: retracted, corrected, reanalysed, disputed; a dispute takes --kind engages_data
@@ -133,6 +133,20 @@ def main():
             out = ws.check(atoms_arg(), classifier)
         elif a.command == 'add':
             out = ws.add(atoms_arg())
+        elif a.command == 'origin' and len(rest) == 1 and rest[0].endswith('.json'):
+            out = []  # a file of {"source", "group", "basis"} entries, each declared or refused on its own
+            for e in json.loads(Path(rest[0]).read_text()):
+                try:
+                    out.append(ws.origin(e.get('source', ''), e.get('group', ''), e.get('basis', ''), a.by))
+                except ToolError as err:
+                    out.append({'source': e.get('source'), 'refused': str(err)})
+        elif a.command == 'accountability' and len(rest) == 1 and rest[0].endswith('.json'):
+            out = []  # a file of {"source", "category", "basis"} entries, each declared or refused on its own
+            for e in json.loads(Path(rest[0]).read_text()):
+                try:
+                    out.append(ws.accountability(e.get('source', ''), e.get('category', ''), e.get('basis', ''), a.by))
+                except ToolError as err:
+                    out.append({'source': e.get('source'), 'refused': str(err)})
         elif a.command == 'origin':
             out = ws.origin(rest[0], rest[1], a.basis, a.by)
         elif a.command == 'rests':

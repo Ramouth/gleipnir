@@ -128,9 +128,15 @@ DESIGNS = {
     'forensic': 'a physical or technical examination: an autopsy, a lab analysis, an engineering test',
     'document': 'a primary record: a memo, filing, log, cable or recording',
     'testimony': "a witness's account",
+    'measurement': 'an instrument measurement or survey of the world (a telescope survey, a sensor record, a census)',
+    'experiment': 'a controlled experiment outside medicine (a detector run, a lab test of a law)',
+    'simulation': 'a computational model run',
+    'observation': 'one object or event observed (a single cluster, a single case)',
 }
 WEAK_DESIGNS = ('case_series', 'case_report', 'expert_opinion', 'testimony')
-UNCOUNTED = ('official_finding', 'forensic', 'document', 'testimony')   # no n or case definition to state
+UNCOUNTED = ('official_finding', 'forensic', 'document', 'testimony', 'simulation', 'observation')
+#: Designs with a sample but no case definition (a survey counts objects, it does not diagnose them).
+NO_DEFINITION = UNCOUNTED + ('measurement', 'experiment', 'mechanistic', 'animal')
 ACCOUNTABILITY = {
     'peer_reviewed': 'a journal or preprint server with review',
     'edited': 'a newsroom or publisher with editors and a corrections practice',
@@ -535,7 +541,7 @@ class Workspace:
         self._save('sources.json', list(sources.values()))
         published, basis, conflict, cands = self._date(sources[sid])
         self.log('fetch', url=url, source=sid, sha256=rec.content_hash)
-        out = {'id': sid, 'chars': len(text), 'published_on': published, 'date_basis': basis,
+        out = {'id': sid, 'url': url, 'chars': len(text), 'published_on': published, 'date_basis': basis,
                'date_conflict': conflict, 'date_candidates': cands}
         notes = []
         if same := [x['id'] for x in sources.values()
@@ -1397,8 +1403,9 @@ class Workspace:
         if not isinstance(tests, str) or tests not in preds:
             return (f'"tests" names no prediction of {hid} or its parent: '
                     f'{", ".join(preds) or "it has none; add them in the frame"}')
-        if reading not in ('consistent', 'inconsistent'):
-            return 'a cell that tests a prediction reads consistent (seen) or inconsistent (not seen, or the opposite)'
+        if reading not in ('consistent', 'inconsistent', 'narrows'):
+            return ('a cell that tests a prediction reads consistent (seen), inconsistent (not seen, or the '
+                    'opposite) or narrows (part of what it allows is excluded)')
         if not preds[tests]['observable']:
             return (f'{tests} is marked not observable, yet this row observes it: mark it observable in the frame, '
                     'or drop "tests"')
@@ -1595,9 +1602,8 @@ class Workspace:
             if read[r].get('tests'):
                 contradicted['disputed' if contested[r] else 'undisputed'].append(
                     {'prediction': read[r]['tests'], 'row': tag(r)})
-        confirmed = [r for r in con if read[r].get('tests') and not any(
-            by_id[r]['cells'].get(x, {}).get('reading') == 'consistent' and by_id[r]['cells'][x].get('tests')
-            for x in rivals)]
+        confirmed = [r for r in con if read[r].get('tests') and not any(   # a rival that fits the row predicted it too
+            by_id[r]['cells'].get(x, {}).get('reading') == 'consistent' for x in rivals)]
         predictions = [p for x in mine for p in hyps[x].get('predictions') or []]
         observable = {p['id'] for p in predictions if p['observable']}
         tested = {c.get('tests') for c in read.values()} & observable
@@ -1642,7 +1648,7 @@ class Workspace:
             f = sorted({s['status'] + (f'/{s["kind"]}' if s.get('kind') else '') for s in statuses})
             f += [r['design']] if r['design'] in WEAK_DESIGNS else []
             f += ['n not stated'] if r['n'] is None and r['design'] not in UNCOUNTED else []
-            f += ['case definition not stated'] if r['case_definition'] is None and r['design'] not in UNCOUNTED else []
+            f += ['case definition not stated'] if r['case_definition'] is None and r['design'] not in NO_DEFINITION else []
             flags[r['id']] = f
             contested[r['id']] = any(s['status'] in CONTESTED for s in statuses)
         tag = lambda rid: f'{rid} ({", ".join(flags[rid])})' if flags[rid] else rid

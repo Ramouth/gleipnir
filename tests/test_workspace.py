@@ -875,3 +875,28 @@ def test_a_partial_null_result_narrows_without_contradicting_and_answers_may_coe
     h1 = next(e for e in q['explanations'] if e['id'] == 'H1')
     assert h1['narrowed_by'] == ['cytokine-study'] and h1['inconsistent_undisputed'] == []
     assert q['discriminates'] == []          # narrowing a range is not a contradiction
+
+
+def test_a_narrowing_test_counts_as_tested_and_a_prediction_rivals_share_is_not_a_confirmation(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.frame(framed())
+    m = predicted(p)
+    words = 'found altered cytokine profiles early in illness'
+    m['evidence'][1]['cells']['H1'] = {'reading': 'narrows', 'words': words, 'tests': 'H1-no-immune'}
+    assert w.matrix(m)['refused'] == []
+    es = {e['id']: e for e in w.matrix_show()['questions'][0]['explanations']}
+    assert 'cannot_be_contradicted' not in es['H1'] and es['H1']['narrowed_by'] == ['cytokine-study']
+    assert [c['row'] for c in es['H2']['confirmed_discriminating']] == ['cytokine-study']
+    m['evidence'][1]['cells']['H1'] = {'reading': 'consistent', 'words': words}   # a rival fits it too
+    w.matrix(m)
+    es = {e['id']: e for e in w.matrix_show()['questions'][0]['explanations']}
+    assert es['H2']['confirmed_discriminating'] == []
+
+
+def test_a_survey_is_not_asked_for_a_case_definition(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = matrix(p)
+    m['evidence'][1].update(design='measurement', case_definition=None)
+    w.matrix(m)
+    grid = '\n'.join(w.matrix_show()['grid'])
+    assert 'case definition not stated' not in grid.split('cytokine-study', 1)[1].splitlines()[0]

@@ -47,8 +47,12 @@ you fetch anything, write a frame and show it to the user:
   are who did it, who else took part and what was withheld afterwards.
 - Mark a question `"rivals": false` when its answers can all be true together (several
   candidates may each supply part of the whole): each is then read on its own evidence.
+- Designs outside medicine: `measurement` (a survey, an instrument record), `experiment`
+  (a detector run, a lab test), `simulation`, `observation` (one object or event). They
+  are not asked for a case definition.
 - A null result that excludes only part of what an explanation allows (a search that
-  covers part of a range) `narrows` it; it is not `inconsistent`. Otherwise the most
+  covers part of a range) `narrows` it; it is not `inconsistent`. A narrowing cell may name
+  the prediction it tests, and then counts as a test that did not contradict. Otherwise the most
   searched-for explanation looks the most contradicted.
 - Change the frame whenever you learn a new rival or prediction: submit the whole file
   again. The matrix inherits it.
@@ -68,6 +72,15 @@ ground in a fifth of the time; the tools went deeper on fewer threads. So:
    `fetch WS URL URL ...` (several at once), `cut`, a matrix row with its quote. A claim
    you could not verify stays in the answer marked `[not verified: why]`, never silently.
 3. The answer keeps the draft's breadth and the verified core's precision.
+
+**A follow-up question** in the same workspace: add it to the frame (new question, its
+rivals and predictions) and run both passes again for it. Anything the follow-up inherits
+from the first answer (a number, a range, a status) is re-checked against its passage with
+`passage WS PID` before it is repeated: a chained answer otherwise carries the first
+answer's slips forward as settled.
+
+Per-source declarations can be batched: `origin WS origins.json` and `accountability WS
+accountability.json` take a list of `{"source", "group"|"category", "basis"}`.
 
 ## The unit is the competing explanation, not the source
 
