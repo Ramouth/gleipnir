@@ -105,7 +105,7 @@ DESIGNS = {
     'case_report': 'one patient',
     'expert_opinion': 'a view without new data',
     'official_finding': "an inquiry, commission, court or agency's finding",
-    'forensic': 'a physical or technical examination: ballistics, autopsy, acoustics, an engineering test',
+    'forensic': 'a physical or technical examination: an autopsy, a lab analysis, an engineering test',
     'document': 'a primary record: a memo, filing, log, cable or recording',
     'testimony': "a witness's account",
 }

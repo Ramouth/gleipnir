@@ -70,7 +70,7 @@ the same question compete, and everything below is computed per question.
   read in a passage. `design` is a category: rct, cohort, case_control, cross_sectional,
   meta_analysis, systematic_review, mechanistic, animal, case_series, case_report,
   expert_opinion, official_finding (an inquiry, commission, court or agency), forensic
-  (ballistics, autopsy, acoustics, an engineering test), document (a memo, filing, log,
+  (an autopsy, a lab analysis, an engineering test), document (a memo, filing, log,
   recording) or testimony (a witness's account). `n` and `case_definition` must stand in the
   row's passage; write `null` when it does not say (they are not asked of the last four). Who counted as a case matters:
   studies under different case definitions may study different things. `year` is
