@@ -13,10 +13,14 @@ recomputed from them on use:
 - a source is re-verified on every use: its id embeds its hash and host, and
   the fetch log must show that hash fetched from that URL;
 - page text is re-extracted from the bytes (hidden content dropped), and the
-  page type (HTML, XML, PDF, text) is sniffed from the bytes, not read from a file;
+  page type (HTML, XML, PDF, text) and its encoding are read from the bytes, not
+  from a file or a header;
 - a bot wall, challenge page or empty shell is refused at fetch, never stored;
-- dates come only from the page's own metadata, validated as calendar dates and
-  kept at the resolution given (a year stays a year);
+  the same text under a second host is named as one document;
+- dates come only from the page's own metadata (or a literature record's own
+  fields), validated as calendar dates and kept at the resolution given (a year
+  stays a year); an archived copy's original date is a declaration grounded in
+  words of its text;
 - passages are re-cut at their offsets, atoms re-checked on `add` and again on
   `compare`, which rebuilds its graph from atoms.jsonl and never reads a saved one;
 - origin groups are declarations with a basis and an author; a source with no
@@ -25,10 +29,17 @@ recomputed from them on use:
   declaration too, grounded in words from a stored passage of the atom's own
   source: eight outlets reporting one study are eight reports of one piece of
   evidence, and an atom with no evidence declared never counts as independent evidence;
-- the matrix of competing explanations is re-validated from matrix.json on
-  every use: each explanation, cell, status and institutional position must
-  quote a stored passage, and a study's n, case definition and year must stand
-  in it; only explanations answering the same question compete;
+- the frame (questions, rival explanations, their predictions) is written
+  before any fetching and checked for form only; the matrix inherits it and
+  grounds each explanation in a passage, and says which are not yet grounded;
+- the matrix of competing explanations is re-validated from matrix.json and
+  frame.json on every use: each grounding, cell, status and institutional
+  position must quote a stored passage, a study's n, case definition and year
+  must stand in a passage of its source, and a cell may test only an observable
+  prediction of its own explanation; only explanations answering the same
+  question compete, and a contested row never counts as fully as a clean one;
+- a declaration is taken back by an undo entry with a note, never by editing:
+  the file keeps both;
 - a small-model flag reaches the LLM as a neutral question, never with a score;
 - source text is wrapped in markers carrying a fresh random nonce, so a page
   cannot close the data block and speak as the tool.
@@ -69,6 +80,9 @@ HIDDEN_STYLE = re.compile(r'display\s*:\s*none|visibility\s*:\s*hidden|opacity\s
 TRACKING = re.compile(r'^(utm_\w+|fbclid|gclid|ref|via|amp)$', re.I)
 ARXIV_ORDER = 'arxiv identifier (month of first version)'
 MIN_TEXT, SHORT_PAGE = 100, 3000
+#: The end of a sentence: before a space, the end, or a capital (paragraphs of a page can run together).
+SENTENCE_END = re.compile(r'[.!?]["\'”’)\]]*(?=\s|$|[A-Z])')
+SNAP = 400                          # how far past the asked end a cut looks for the end of a sentence
 WALL = re.compile(r'just a moment|captcha|enable javascript|turn on javascript|requires javascript|'
                   r'javascript is (disabled|required)|access denied|are you a robot|not a robot|'
                   r'checking your browser|client challenge|verify you are (a )?human|attention required|'
@@ -83,7 +97,13 @@ REPOSITORIES = ('europepmc.org', 'ebi.ac.uk', 'ncbi.nlm.nih.gov', 'doi.org', 'ar
                 'researchgate.net', 'core.ac.uk', 'hal.science', 'jstor.org', 'scholar.archive.org',
                 'documentcloud.org', 'archives.gov', 'govinfo.gov', 'scribd.com')
 RELAY_ACTS = ('verifies', 'qualifies', 'disputes', 'distorts')
-EVIDENCE_STATUS = ('retracted', 'corrected', 'disputed')
+EVIDENCE_STATUS = {'retracted': 'withdrawn by its authors or publisher',
+                   'corrected': 'an erratum or correction changed it',
+                   'reanalysed': 'its data were examined again, with a different result',
+                   'disputed': 'a published critique; give its kind'}
+DISPUTE_KINDS = {'engages_data': 'the critique works with the evidence itself: its data, methods or analysis',
+                 'objection': 'the critique objects without engaging the data: interpretation, framing, interests'}
+CONTESTED = ('retracted', 'reanalysed', 'disputed')   # a row with one of these never counts as fully as a clean one
 READINGS = ('consistent', 'inconsistent', 'neutral', 'not_applicable')
 LETTERS = {'consistent': 'C', 'inconsistent': 'I', 'neutral': 'N', 'not_applicable': '-'}
 IMPLICIT = 'Q'                      # the one question of a matrix that names none
@@ -142,11 +162,27 @@ def _partial(y: str, m: str | None, d: str | None) -> str | None:
     return _valid(y, m, d)
 
 
+CHARSET = re.compile(rb'<meta[^>]+charset\s*=\s*["\']?\s*([A-Za-z0-9_.:-]+)|^\s*<\?xml[^>]+encoding\s*=\s*["\']([A-Za-z0-9_.:-]+)',
+                     re.I)
+
+
 def _decode(payload: bytes) -> str:
+    """UTF-8, else the charset the page declares in its own bytes (a meta tag,
+    an XML declaration), else Windows-1252, else Latin-1, which never fails.
+    Read from the bytes only, so every use decodes the same way."""
+    import codecs
     try:
         return payload.decode('utf-8-sig')
     except UnicodeDecodeError:
-        raise ToolError('page is not UTF-8; other encodings are not supported yet') from None
+        pass
+    declared = [(m.group(1) or m.group(2)).decode('ascii').strip() for m in CHARSET.finditer(payload[:4096])]
+    for enc in declared + ['cp1252', 'latin-1']:
+        try:
+            codecs.lookup(enc)
+            return payload.decode(enc)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return payload.decode('latin-1')
 
 
 def is_pdf(payload: bytes) -> bool:
@@ -169,7 +205,7 @@ def is_html(payload: bytes) -> bool:
 
 def _document(payload: bytes):
     parser = html.HTMLParser(huge_tree=True, remove_comments=True)
-    text = re.sub(r'^\s*<\?xml[^>]*\?>', '', _decode(payload))   # XHTML: lxml refuses a declared encoding in str
+    text = re.sub(r'^\ufeff?\s*<\?xml[^>]*\?>', '', _decode(payload))   # XHTML: lxml refuses a declared encoding in str
     return html.fromstring(text, parser=parser)
 
 
@@ -277,17 +313,41 @@ def date_candidates(payload: bytes, url: str) -> dict[str, list[str]]:
                     and (d := _partial(*m.groups())):
                 found['citation meta' if key.startswith('citation') else 'meta tag'].append(d)
     elif is_xml(payload):                          # a JATS article's own publication dates
-        for pd in _xml(payload).xpath('//*[local-name()="article-meta"]/*[local-name()="pub-date"]'):
+        root = _xml(payload)
+        for pd in root.xpath('//*[local-name()="article-meta"]/*[local-name()="pub-date"]'):
             part = lambda k: next((x.text.strip() for x in pd if isinstance(x.tag, str)
                                    and x.tag.split('}')[-1] == k and (x.text or '').strip().isdigit()), None)
             if (y := part('year')) and (d := _partial(y, part('month'), part('month') and part('day'))):
                 found['jats pub-date'].append(d)
+        for key in RECORD_DATES:                   # a literature-index record (Europe PMC core XML)
+            _record_date(found, key, [x.text for x in root.xpath(f'//*[local-name()="{key}"]')])
+    elif payload.lstrip(b'\xef\xbb\xbf \t\r\n')[:1] in (b'{', b'['):   # the same record as JSON
+        try:
+            data = json.loads(_decode(payload))
+        except ValueError:
+            data = None
+        results = (data.get('resultList') or {}).get('result') if isinstance(data, dict) and \
+            isinstance(data.get('resultList'), dict) else None
+        records = [d for d in [data] + (results if isinstance(results, list) else []) if isinstance(d, dict)]
+        for key in RECORD_DATES:
+            _record_date(found, key, [r.get(key) for r in records if key in r])
     parsed = urlparse(url)
     if parsed.netloc.endswith('arxiv.org') and \
             (m := re.match(r'/(?:abs|html|pdf)/(\d{2})(\d{2})\.\d{4,5}', parsed.path)):
         if 1 <= int(m.group(2)) <= 12:
             found[ARXIV_ORDER].append(f'20{m.group(1)}-{m.group(2)}')
     return dict(found)
+
+
+RECORD_DATES = ('firstPublicationDate', 'pubYear')
+
+
+def _record_date(found: dict, key: str, values: list) -> None:
+    """A record's own date, only when the page holds exactly one: a result list
+    of many papers dates none of them."""
+    if len(values) == 1 and isinstance(values[0], (str, int)) and \
+            (m := DATE_VALUE.match(str(values[0]))) and (d := _partial(*m.groups())):
+        found[f'record {key}'].append(d)
 
 
 def pick_date(cands: dict[str, list[str]]) -> tuple[str | None, str, bool]:
@@ -301,7 +361,8 @@ def pick_date(cands: dict[str, list[str]]) -> tuple[str | None, str, bool]:
     values = {norm(v) for v in raw}
     fits = lambda a, b: a[:7].startswith(b[:7]) or b[:7].startswith(a[:7])
     conflict = any(not fits(a, b) for a in values for b in values)
-    for basis in ('json-ld datePublished', 'citation meta', 'jats pub-date', 'meta tag', ARXIV_ORDER):
+    for basis in ('json-ld datePublished', 'citation meta', 'jats pub-date', 'record firstPublicationDate',
+                  'record pubYear', 'meta tag', ARXIV_ORDER):
         if cands.get(basis):
             chosen = norm(cands[basis][0])
             return max((v for v in values if v.startswith(chosen)), key=len), basis, conflict
@@ -476,10 +537,56 @@ class Workspace:
         self.log('fetch', url=url, source=sid, sha256=rec.content_hash)
         out = {'id': sid, 'chars': len(text), 'published_on': published, 'date_basis': basis,
                'date_conflict': conflict, 'date_candidates': cands}
+        notes = []
         if same := [x['id'] for x in sources.values()
                     if _canonical_url(x['url']) == _canonical_url(url) and x['id'] != sid]:
-            out['note'] = f'this page was fetched before as {same}: one origin, not two'
+            notes.append(f'this page was fetched before as {same}: one origin, not two')
+        if twins := self._same_text(sid, text):
+            notes.append(f'the same text is stored as {twins}: one document, not two; declare them one origin')
+        if notes:
+            out['note'] = '; '.join(notes)
         return out
+
+    def _same_text(self, sid: str, text: str) -> list[str]:
+        """Other sources whose text is this text (ignoring case and spacing),
+        each re-extracted from its bytes: one document under two hosts."""
+        key = lambda t: hashlib.sha256(' '.join(t.casefold().split()).encode()).hexdigest()
+        mine, out = key(text), []
+        for x in self.sources().values():
+            if x['id'] == sid or x.get('chars') != len(text):     # the length only narrows the search
+                continue
+            try:
+                if key(self._text(self._source(x['id']))) == mine:
+                    out.append(x['id'])
+            except ToolError:
+                continue
+        return out
+
+    def original(self, source_id: str, when: str, words: str, note: str = '', declared_by: str = 'llm') -> dict:
+        """Record the date of the document a source is a copy of (an archived
+        or re-published copy of a much older report), next to the copy's own
+        date. The words must stand in the source's text and state the year."""
+        s = self._source(source_id)
+        if not self._dated(when) or not note.strip():
+            raise ToolError('an original date is YYYY, YYYY-MM or YYYY-MM-DD, with a --note saying why')
+        if len(_ws(words).split()) < 3 or _ws(words) not in _ws(self._text(s)) or when[:4] not in words:
+            raise ToolError(f'name at least three exact words of {source_id} that state the year {when[:4]}: '
+                            'find them with `read --find`')
+        sources = self.sources()
+        sources[source_id]['original'] = {'date': when, 'words': words, 'note': note, 'declared_by': declared_by,
+                                          'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+        self._save('sources.json', list(sources.values()))
+        self.log('original', source=source_id, date=when)
+        return {'source': source_id, 'original_date': when, 'copy_date': self._date(s)[0]}
+
+    def _original(self, s: dict) -> str | None:
+        """The declared original date, re-checked against the source's text."""
+        o = s.get('original') if isinstance(s.get('original'), dict) else {}
+        when, words = o.get('date'), o.get('words')
+        if self._dated(when) and isinstance(words, str) and (o.get('note') or '').strip() and \
+                len(_ws(words).split()) >= 3 and when[:4] in words and _ws(words) in _ws(self._text(s)):
+            return when
+        return None
 
     def read(self, source_id: str, find: str | None = None, around: int = 1500) -> str:
         s = self._source(source_id)
@@ -492,11 +599,15 @@ class Workspace:
         else:
             start, end = 0, min(len(text), 2 * around)
         published, basis, conflict, _ = self._date(s)
+        original = self._original(s)
         self.log('read', source=source_id, start=start, end=end)
         return (f'{source_id}  chars {start}-{end} of {len(text)}  published {published} ({basis})'
+                f'{f"  original {original}" if original else ""}'
                 f'{"  DATE CONFLICT" if conflict else ""}\n{self._wrap(text[start:end])}')
 
     def cut(self, source_id: str, anchor: str, before: int = 200, after: int = 600) -> dict:
+        """Cut a passage around the anchor, ending at the end of a sentence. A
+        span already inside a stored passage returns that passage."""
         s = self._source(source_id)
         text = self._text(s)
         anchor = ' '.join(anchor.split())
@@ -504,7 +615,17 @@ class Workspace:
         if at < 0:
             raise ToolError(f'anchor not in {source_id}: copy it again from `read`')
         start, end = max(0, at - before), min(len(text), at + len(anchor) + after)
+        if m := SENTENCE_END.search(text, max(start, end - 1), min(len(text), end + SNAP)):
+            end = m.end()
         passages = self.passages()
+        dated = {'source_id': source_id, 'source_date': self._date(s)[0],
+                 **({'original_date': o} if (o := self._original(s)) else {})}
+        for p in passages.values():
+            if p.get('source_id') == source_id and isinstance(p.get('start'), int) and isinstance(p.get('end'), int) \
+                    and p['start'] <= start and end <= p['end']:
+                self.log('cut', passage=p['id'], source=source_id, existing=True)
+                return {'passage': p['id'], 'existing': True, **dated,
+                        'text': self._wrap(text[p['start']:p['end']])}
         n = len(passages)
         while f'p{n:03}' in passages:
             n += 1
@@ -512,8 +633,7 @@ class Workspace:
         passages[pid] = {'id': pid, 'source_id': source_id, 'start': start, 'end': end}
         self._save('passages.json', list(passages.values()))
         self.log('cut', passage=pid, source=source_id, start=start, end=end)
-        return {'passage': pid, 'source_id': source_id, 'source_date': self._date(s)[0],
-                'text': self._wrap(text[start:end])}
+        return {'passage': pid, **dated, 'text': self._wrap(text[start:end])}
 
     def passage(self, pid: str) -> Passage:
         """Re-cut from the raw bytes: nothing edited in the workspace can pass."""
@@ -856,20 +976,33 @@ class Workspace:
         return {'uids': uids, 'act': act, 'source': sid,
                 **({'evidence': f'check:{sid}'} if act == 'verifies' else {})}
 
-    def evidence_status(self, evidence: str, status: str, passage_id: str, words: str, note: str,
-                        declared_by: str = 'llm') -> dict:
-        """Record that a piece of evidence was retracted, corrected or disputed,
-        with words from any stored passage that say so (a retraction notice,
-        an erratum, a published critique). Retracted evidence stops counting."""
+    @staticmethod
+    def _status_defect(status, kind) -> str | None:
         if status not in EVIDENCE_STATUS:
-            raise ToolError(f'status must be one of {", ".join(EVIDENCE_STATUS)}')
+            return 'status must be one of: ' + '; '.join(f'{k} ({v})' for k, v in EVIDENCE_STATUS.items())
+        if status == 'disputed' and kind not in DISPUTE_KINDS:
+            return 'a dispute needs its kind: ' + '; '.join(f'{k} ({v})' for k, v in DISPUTE_KINDS.items())
+        if status != 'disputed' and kind is not None:
+            return 'only a dispute has a kind'
+        return None
+
+    def evidence_status(self, evidence: str, status: str, passage_id: str, words: str, note: str,
+                        declared_by: str = 'llm', kind: str | None = None) -> dict:
+        """Record that a piece of evidence was retracted, corrected, reanalysed
+        or disputed, with words from any stored passage that say so (a
+        retraction notice, an erratum, a reanalysis, a published critique). A
+        dispute says whether it engages the data or only objects. Retracted
+        evidence stops counting."""
+        if why := self._status_defect(status, kind):
+            raise ToolError(why)
         matrix_rows = {r.get('id') for r in self._json('matrix.json', {}).get('evidence', []) if isinstance(r, dict)}
         if evidence not in self._evidence_ids() | matrix_rows:
             raise ToolError(f'unknown evidence {evidence}: declare it with `rests` or as a `matrix` row first')
         if len(_ws(words).split()) < 3 or not note.strip() or _ws(words) not in _ws(self.passage(passage_id).text):
             raise ToolError(f'name at least three exact words of {passage_id} that say so, and a --note')
-        entry = {'evidence': evidence, 'status': status, 'passage': passage_id, 'words': words, 'note': note,
-                 'declared_by': declared_by, 'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+        entry = {'evidence': evidence, 'status': status, **({'kind': kind} if kind else {}), 'passage': passage_id,
+                 'words': words, 'note': note, 'declared_by': declared_by,
+                 'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
         with open(self.root / 'evidence_status.jsonl', 'a') as f:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         self.log('evidence_status', evidence=evidence, status=status)
@@ -879,9 +1012,11 @@ class Workspace:
         out = {}
         for e in self._json_lines('evidence_status.jsonl'):
             try:
-                if e.get('status') in EVIDENCE_STATUS and len(_ws(e.get('words') or '').split()) >= 3 \
-                        and (e.get('note') or '').strip() and _ws(e['words']) in _ws(self.passage(e['passage']).text):
-                    out.setdefault(e['evidence'], []).append({'status': e['status'], 'passage': e['passage']})
+                if not self._status_defect(e.get('status'), e.get('kind')) \
+                        and len(_ws(e.get('words') or '').split()) >= 3 and (e.get('note') or '').strip() \
+                        and _ws(e['words']) in _ws(self.passage(e['passage']).text):
+                    out.setdefault(e['evidence'], []).append({'status': e['status'], 'passage': e['passage'],
+                                                              **({'kind': e['kind']} if e.get('kind') else {})})
             except (ToolError, ValueError, KeyError):
                 continue
         return out
@@ -969,15 +1104,27 @@ class Workspace:
         return 'unreviewed'
 
     # ── identity: joining the per-source islands ─────────────────────────────
-    def link(self, a: str, b: str, basis: str, declared_by: str = 'llm') -> dict:
+    def link(self, a: str, b: str, basis: str, declared_by: str = 'llm', undo: bool = False, note: str = '') -> dict:
         """Declare that two entity ids from different sources name the same thing.
 
         Provenance stays per source; entities must be shared, or the graph is
         one island per source. Code cannot know that "Sozialdemokraten" and
         "Social Democrats" are one party, or that two sources' "the director"
         are two people. The LLM decides, with a basis; the link is recorded,
-        reviewable and never inferred silently.
+        reviewable and never inferred silently. `undo` takes a link back, with
+        a note; both stay in the file.
         """
+        if undo:
+            if not note.strip():
+                raise ToolError('an undo needs a --note saying why')
+            if frozenset((a, b)) not in self._links():
+                raise ToolError(f'nothing to undo: no link between {a} and {b}')
+            entry = {'a': a, 'b': b, 'undo': True, 'note': note, 'declared_by': declared_by,
+                     'at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+            with open(self.root / 'links.jsonl', 'a') as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
+            self.log('link', a=a, b=b, undo=True)
+            return entry
         if not basis.strip():
             raise ToolError('a link needs a basis: why these name the same thing')
         graph, _ = self._graph()
@@ -992,8 +1139,22 @@ class Workspace:
         self.log('link', a=a, b=b, basis=basis)
         return entry
 
+    def _links(self) -> set[frozenset]:
+        """Standing links: each with a basis, less those undone (with a note) since."""
+        out = set()
+        for e in self._json_lines('links.jsonl'):
+            if not isinstance(e.get('a'), str) or not isinstance(e.get('b'), str):
+                continue
+            pair = frozenset((e['a'], e['b']))
+            if e.get('undo'):
+                if (e.get('note') or '').strip():
+                    out.discard(pair)
+            elif (e.get('basis') or '').strip():
+                out.add(pair)
+        return out
+
     def _linked(self):
-        """Union of recorded links (each with a basis) into canonical ids."""
+        """Union of standing links into canonical ids."""
         parent: dict[str, str] = {}
 
         def root(x):
@@ -1002,11 +1163,11 @@ class Workspace:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
-        for e in self._json_lines('links.jsonl'):
-            if (e.get('basis') or '').strip():
-                ra, rb = root(e['a']), root(e['b'])
-                if ra != rb:
-                    parent[max(ra, rb)] = min(ra, rb)
+        for pair in self._links():
+            a, b = sorted(pair) if len(pair) == 2 else (next(iter(pair)),) * 2
+            ra, rb = root(a), root(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
         return lambda x: root(x) if x in parent else x
 
     def link_candidates(self, limit: int = 40) -> list[dict]:
@@ -1061,6 +1222,108 @@ class Workspace:
         self.log('explain', group=group, reason=reason, passage=passage_id)
         return entry
 
+    # ── the frame: questions, rival explanations and what each predicts ──────
+    @staticmethod
+    def _predictions(raw, owner: str, seen: set, refused: list) -> list[dict]:
+        out = []
+        for p in raw if isinstance(raw, list) else []:
+            p = p if isinstance(p, dict) else {}
+            pid, text = str(p.get('id') or '').strip(), str(p.get('text') or '').strip()
+            why = ('a prediction needs an id and a text: what would be seen if the explanation were true'
+                   if not pid or not text
+                   else f'duplicate prediction {pid}: prediction ids are unique across the frame and the matrix'
+                   if pid in seen
+                   else 'a prediction says whether it is "observable": true if some evidence could show it, '
+                        'false if nothing could' if not isinstance(p.get('observable'), bool) else None)
+            if why:
+                refused.append({'explanation': owner, 'prediction': pid or '?', 'why': why})
+            else:
+                seen.add(pid)
+                out.append({'id': pid, 'text': text, 'observable': p['observable']})
+        return out
+
+    def _frame_check(self, data) -> tuple[dict, list[dict]]:
+        """The part of a frame that stands, and every refused part. Form only:
+        a frame is written before any fetching, so nothing in it is quoted yet."""
+        refused, questions, hids, pids = [], [], set(), set()
+        for q in (data.get('questions') if isinstance(data, dict) else None) or []:
+            q = q if isinstance(q, dict) else {}
+            qid, text = str(q.get('id') or '').strip(), str(q.get('text') or '').strip()
+            lists = {k: [str(x).strip() for x in q[k] if str(x).strip()] if isinstance(q.get(k), list) else []
+                     for k in ('discriminating', 'look_for')}
+            why = ('a question needs an id and a text' if not qid or not text
+                   else f'duplicate question {qid}' if any(x['id'] == qid for x in questions)
+                   else 'name the evidence that would tell its explanations apart ("discriminating")'
+                   if not lists['discriminating']
+                   else 'name the newest and largest studies or official findings to look for ("look_for")'
+                   if not lists['look_for'] else None)
+            if why:
+                refused.append({'question': qid or '?', 'why': why})
+                continue
+            explanations = []
+            for h in q.get('explanations') or []:
+                h = h if isinstance(h, dict) else {}
+                hid, claim = str(h.get('id') or '').strip(), str(h.get('claim') or '').strip()
+                why = ('an explanation needs an id and a claim' if not hid or not claim
+                       else f'duplicate explanation {hid}' if hid in hids else None)
+                if not why and not (predictions := self._predictions(h.get('predictions'), hid, pids, refused)):
+                    why = ('name at least one checkable prediction: what would be seen if it were true, '
+                           'with "observable" true or false')
+                if why:
+                    refused.append({'explanation': hid or '?', 'why': why})
+                    continue
+                hids.add(hid)
+                explanations.append({'id': hid, 'claim': claim, 'predictions': predictions})
+            questions.append({'id': qid, 'text': text, 'explanations': explanations, **lists})
+        return {'questions': questions}, refused
+
+    def _frame(self) -> tuple[dict, list[dict]]:
+        return self._frame_check(self._json('frame.json', {}))
+
+    def frame(self, data) -> dict:
+        """Store the research frame, written before any fetching: the questions,
+        the rival explanations to each, what each predicts and whether that can
+        be observed, what would discriminate, and what to look for. Each
+        submission replaces the stored frame, keeping what passes. The matrix
+        inherits its questions, explanations and predictions."""
+        if not isinstance(data, dict) or not isinstance(data.get('questions'), list) or not data['questions']:
+            raise ToolError('a frame is a JSON object with a "questions" list: each with its explanations, their '
+                            'predictions, what would discriminate and what to look for (see SKILL.md)')
+        f, refused = self._frame_check(data)
+        self._save('frame.json', f)
+        self.log('frame', questions=len(f['questions']), refused=len(refused))
+        return {'stored': {q['id']: [h['id'] for h in q['explanations']] for q in f['questions']},
+                'refused': refused,
+                'next': ('fix each refused part in your file and submit the whole file again' if refused else
+                         'show it with `frame WS` for the user to confirm or steer before fetching')}
+
+    def frame_show(self) -> dict:
+        """The frame on one screen, for a human to confirm or steer. Explanations
+        the matrix has not yet grounded in a passage are shown as such."""
+        f, dropped = self._frame()
+        if not f['questions']:
+            raise ToolError('no frame yet: write one (see SKILL.md) and store it with `frame WS FILE`')
+        m, _ = self._matrix_check(self._json('matrix.json', {}))
+        grounded = {h['id']: h['proposed_in']['passage'] for h in m['explanations'] if h.get('proposed_in')}
+        lines = [f'FRAME: {self._json("workspace.json", {}).get("question")}',
+                 'Confirm or steer: is a question, a rival explanation or a prediction missing?']
+        for q in f['questions']:
+            lines += ['', f'{q["id"]}  {q["text"]}']
+            if len(q['explanations']) < 2:
+                lines.append('  ! fewer than two explanations: nothing is weighed against anything')
+            for h in q['explanations']:
+                where = f'grounded in {grounded[h["id"]]}' if h['id'] in grounded else 'not yet grounded in a passage'
+                lines.append(f'  {h["id"]}  {h["claim"]}  [{where}]')
+                width = max(len(p['id']) for p in h['predictions'])
+                lines += [f'      {p["id"]:<{width}}  {"observable    " if p["observable"] else "not observable"}  '
+                          f'{p["text"]}' for p in h['predictions']]
+                if not any(p['observable'] for p in h['predictions']):
+                    lines.append('      ! cannot be contradicted: none of its predictions is observable')
+            lines.append('  discriminating: ' + '; '.join(q['discriminating']))
+            lines.append('  look for: ' + '; '.join(q['look_for']))
+        self.log('frame_show', questions=len(f['questions']))
+        return {'screen': lines, **({'dropped_on_use': dropped} if dropped else {})}
+
     # ── competing explanations: a light matrix after Heuer's ACH ─────────────
     def _quoted(self, pid, words, what: str) -> str | None:
         """Why the words do not stand in the passage, or None if they do."""
@@ -1074,6 +1337,9 @@ class Workspace:
             f'{what}: the words are not in {pid}; copy them again from `passage WS {pid}`'
 
     def _row_defect(self, r: dict, rid: str, seen: set, known: set) -> str | None:
+        """A row's n, case definition and year may each stand in any passage of
+        the row's source (`n_in`, `case_definition_in`, `year_in`); by default
+        the row's own passage."""
         import difflib
         if not rid:
             return 'a row needs an evidence id: one from `rests`, or a new one for a study you read in a passage'
@@ -1086,41 +1352,98 @@ class Workspace:
         if r.get('design') not in DESIGNS:
             return 'design must be one of: ' + '; '.join(f'{k} ({v})' for k, v in DESIGNS.items())
         passage = self.passage(r['passage'])
-        text = passage.text
+        texts = {}
+        for k in ('n', 'case_definition', 'year'):
+            pid = r.get(f'{k}_in') or r['passage']
+            try:
+                other = self.passage(pid) if isinstance(pid, str) else None
+            except ToolError:
+                other = None
+            if r.get(k) is not None and (other is None or other.source_id != passage.source_id):
+                return (f'{k}_in must name a stored passage of the row\'s source ({passage.source_id}): '
+                        'cut the passage that states it')
+            texts[k] = (pid, other.text if other else '')
         n, cd, year = r.get('n'), r.get('case_definition'), r.get('year')
         if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < 1 or not re.search(
-                rf'(?<![\d.]){n}(?!\d)', re.sub(r'(?<=\d)[,   ](?=\d{3}(?!\d))', '', text))):
-            return f'n={n!r} is not a number stated in {r["passage"]}: cut the passage that states it, or write null'
-        if cd is not None and (not isinstance(cd, str) or not cd.strip() or _ws(cd) not in _ws(text)):
-            return (f'case_definition must be words of {r["passage"]} (e.g. "Fukuda criteria"), or null '
-                    'if the passage does not say who counted as a case')
-        if year is not None and (not isinstance(year, int) or isinstance(year, bool) or not (
-                re.search(rf'(?<!\d){year}(?!\d)', text) or (passage.source_date or '')[:4] == str(year))):
-            return (f'year={year!r} is neither stated in {r["passage"]} nor the year its source is dated: '
-                    'cut the passage that states it, or leave year out')
+                rf'(?<![\d.]){n}(?!\d)', re.sub(r'(?<=\d)[,   ](?=\d{3}(?!\d))', '', texts['n'][1]))):
+            return (f'n={n!r} is not a number stated in {texts["n"][0]}: name the passage of this source that '
+                    'states it in "n_in", or write null')
+        if cd is not None and (not isinstance(cd, str) or not cd.strip() or _ws(cd) not in _ws(texts['case_definition'][1])):
+            return (f'case_definition must be words of {texts["case_definition"][0]} (e.g. "Fukuda criteria"), '
+                    'or of the passage named in "case_definition_in"; null if the source does not say who counted '
+                    'as a case')
+        if year is not None:
+            s = self._source(passage.source_id)
+            dated = {(passage.source_date or '')[:4], (self._original(s) or '')[:4]}
+            if not isinstance(year, int) or isinstance(year, bool) or not (
+                    re.search(rf'(?<!\d){year}(?!\d)', texts['year'][1]) or str(year) in dated):
+                return (f'year={year!r} is neither stated in {texts["year"][0]} nor the year its source (or the '
+                        'original it copies, see `original`) is dated: name the passage that states it in '
+                        '"year_in", or leave year out')
+        return None
+
+    def _lineage(self, hid: str, hyps: dict) -> list[str]:
+        out = [hid]
+        while (p := hyps[out[-1]].get('parent')) in hyps and p not in out:
+            out.append(p)
+        return out
+
+    def _tests_defect(self, tests, hid: str, reading: str, hyps: dict) -> str | None:
+        preds = {p['id']: p for x in self._lineage(hid, hyps) for p in hyps[x].get('predictions') or []}
+        if not isinstance(tests, str) or tests not in preds:
+            return (f'"tests" names no prediction of {hid} or its parent: '
+                    f'{", ".join(preds) or "it has none; add them in the frame"}')
+        if reading not in ('consistent', 'inconsistent'):
+            return 'a cell that tests a prediction reads consistent (seen) or inconsistent (not seen, or the opposite)'
+        if not preds[tests]['observable']:
+            return (f'{tests} is marked not observable, yet this row observes it: mark it observable in the frame, '
+                    'or drop "tests"')
         return None
 
     def _matrix_check(self, data) -> tuple[dict, list[dict]]:
         """The part of a matrix that stands, in the submitted form, and every
-        refused part with what to do instead. Run on submit and on every use."""
+        refused part with what to do instead. Run on submit and on every use.
+        Questions, explanations and predictions of the frame are inherited: the
+        matrix grounds a frame explanation in a passage (`proposed_in`) and
+        changes it only in the frame."""
         if not isinstance(data, dict):
             raise ToolError('a matrix is a JSON object with "questions", "explanations" and "evidence" lists')
-        refused, questions = [], {}
+        frame, refused = self._frame()
+        refused = [{'frame': True, **x} for x in refused]
+        questions = {q['id']: {'id': q['id'], 'text': q['text'], 'framed': True} for q in frame['questions']}
+        framed = {h['id']: {**h, 'answers': q['id'], 'proposed_in': None, 'framed': True}
+                  for q in frame['questions'] for h in q['explanations']}
+        preds = {p['id'] for h in framed.values() for p in h['predictions']}
         for q in data.get('questions') or []:
             q = q if isinstance(q, dict) else {}
             qid, text = str(q.get('id') or '').strip(), str(q.get('text') or '').strip()
-            why = ('a question needs an id and a text' if not qid or not text
+            why = (f'{qid} is in the frame: change it there' if qid in questions and questions[qid].get('framed')
+                   and text and text != questions[qid]['text']
+                   else None if qid in questions and questions[qid].get('framed')
+                   else 'a question needs an id and a text' if not qid or not text
                    else f'duplicate question {qid}' if qid in questions else None)
             if why:
                 refused.append({'question': qid or '?', 'why': why})
-            else:
+            elif qid not in questions:
                 questions[qid] = {'id': qid, 'text': text}
-        implicit = not data.get('questions')          # no questions: one implicit question, as before
-        hyps = {}
+        implicit = not questions          # no questions: one implicit question, as before
+        hyps, mentioned = dict(framed), set()
         for h in data.get('explanations') or []:
             h = h if isinstance(h, dict) else {}
             hid, where, answers = str(h.get('id') or '').strip(), h.get('proposed_in'), h.get('answers')
             where = where if isinstance(where, dict) else {}
+            if hid in framed and hid not in mentioned:
+                mentioned.add(hid)
+                changed = [k for k in ('claim', 'answers', 'predictions', 'parent') if k in h and h[k] != framed[hid].get(k)]
+                if changed:
+                    refused.append({'explanation': hid, 'why': f'{hid} is in the frame: change its {", ".join(changed)} '
+                                                              'there; here it takes only "proposed_in"'})
+                if where and (why := self._quoted(where.get('passage'), where.get('words'),
+                                                  'proposed_in (the passage that proposes it and its words)')):
+                    refused.append({'explanation': hid, 'part': 'proposed_in', 'why': why})
+                elif where:
+                    hyps[hid]['proposed_in'] = {k: where[k] for k in ('passage', 'words')}
+                continue
             answers = answers if answers is None or isinstance(answers, str) else repr(answers)
             why = ('an explanation needs an id and a claim' if not hid or not str(h.get('claim') or '').strip()
                    else f'duplicate explanation {hid}' if hid in hyps
@@ -1132,12 +1455,14 @@ class Workspace:
                                      'proposed_in (the passage that proposes it and its words)'))
             if why:
                 refused.append({'explanation': hid or '?', 'why': why})
-            else:
-                hyps[hid] = {'id': hid, 'claim': h['claim'], 'proposed_in': {k: where[k] for k in ('passage', 'words')},
-                             'answers': IMPLICIT if implicit else answers,
-                             **({'parent': h['parent']} if h.get('parent') is not None else {})}
-                if 'parent' in hyps[hid] and answers is None:
-                    hyps[hid]['answers'] = None      # a variant answers its parent's question
+                continue
+            hyps[hid] = {'id': hid, 'claim': h['claim'], 'proposed_in': {k: where[k] for k in ('passage', 'words')},
+                         'answers': IMPLICIT if implicit else answers,
+                         **({'parent': h['parent']} if h.get('parent') is not None else {}),
+                         **({'predictions': p} if (p := self._predictions(h.get('predictions'), hid, preds, refused))
+                            else {})}
+            if 'parent' in hyps[hid] and answers is None:
+                hyps[hid]['answers'] = None      # a variant answers its parent's question
 
         def answers_of(hid):
             while hyps[hid]['answers'] is None:
@@ -1171,16 +1496,18 @@ class Workspace:
                 continue
             seen.add(rid)
             row = {'id': rid, **{k: r.get(k) for k in ('passage', 'words', 'design', 'n', 'case_definition', 'year')},
+                   **{f'{k}_in': r[f'{k}_in'] for k in ('n', 'case_definition', 'year') if r.get(f'{k}_in')},
                    'status': [], 'positions': [], 'cells': {}}
             for s in r.get('status') or []:
                 s = s if isinstance(s, dict) else {}
-                why = ('status must be one of ' + ', '.join(EVIDENCE_STATUS) if s.get('status') not in EVIDENCE_STATUS
-                       else 'a status needs a "note": what the notice or critique says' if not str(s.get('note') or '').strip()
-                       else self._quoted(s.get('passage'), s.get('words'), 'status (the notice or critique)'))
+                why = (self._status_defect(s.get('status'), s.get('kind'))
+                       or ('a status needs a "note": what the notice or critique says'
+                           if not str(s.get('note') or '').strip() else None)
+                       or self._quoted(s.get('passage'), s.get('words'), 'status (the notice or critique)'))
                 if why:
                     refused.append({'row': rid, 'part': 'status', 'why': why})
                 else:
-                    row['status'].append({k: s[k] for k in ('status', 'passage', 'words', 'note')})
+                    row['status'].append({k: s[k] for k in ('status', 'kind', 'passage', 'words', 'note') if k in s})
             for p in r.get('positions') or []:
                 p = p if isinstance(p, dict) else {}
                 why = ('a position needs the institution' if not str(p.get('institution') or '').strip()
@@ -1201,12 +1528,15 @@ class Workspace:
                 pid = c.get('passage') or r['passage']
                 why = (f'no standing explanation {hid}' if hid not in hyps
                        else 'reading must be one of ' + ', '.join(READINGS) if c.get('reading') not in READINGS
-                       else None if c.get('reading') in ('neutral', 'not_applicable') and not c.get('words')
-                       else self._quoted(pid, c.get('words'), f'cell {hid} (the words that make it {c["reading"]})'))
+                       else self._tests_defect(c['tests'], hid, c['reading'], hyps) if c.get('tests') is not None
+                       else None)
+                why = why or (None if c['reading'] in ('neutral', 'not_applicable') and not c.get('words') else
+                              self._quoted(pid, c.get('words'), f'cell {hid} (the words that make it {c["reading"]})'))
                 if why:
                     refused.append({'row': rid, 'cell': hid, 'why': why})
                 else:
                     row['cells'][hid] = {'reading': c['reading'], 'passage': pid, 'words': c.get('words'),
+                                         **({'tests': c['tests']} if c.get('tests') is not None else {}),
                                          **({'note': c['note']} if c.get('note') else {})}
             rows.append(row)
         return {'questions': list(questions.values()), 'explanations': list(hyps.values()), 'evidence': rows}, refused
@@ -1220,9 +1550,13 @@ class Workspace:
     def matrix(self, data) -> dict:
         """Store a matrix of competing explanations against evidence. The file is
         the whole matrix: each submission replaces the stored one, keeping only
-        what passes."""
+        what passes. What the frame holds is not copied: it is inherited on use."""
         m, refused = self._matrix_check(data)
-        self._save('matrix.json', m)
+        own = {'questions': [q for q in m['questions'] if not q.get('framed')],
+               'explanations': [{'id': h['id'], 'proposed_in': h['proposed_in']} if h.get('framed') else h
+                                for h in m['explanations'] if not h.get('framed') or h['proposed_in']],
+               'evidence': m['evidence']}
+        self._save('matrix.json', own)
         self.log('matrix', questions=len(m['questions']), explanations=len(m['explanations']),
                  rows=len(m['evidence']), refused=len(refused))
         return {'stored': {'questions': [q['id'] for q in m['questions']],
@@ -1236,23 +1570,74 @@ class Workspace:
         created = str(self._json('workspace.json', {}).get('created') or '')
         return int(created[:4]) if re.match(r'\d{4}-', created) else datetime.now(timezone.utc).year
 
+    def _weigh(self, h: dict, ids: list[str], hyps: dict, rows: list[dict], contested: dict, tag,
+               discriminating: set) -> tuple:
+        """One explanation read against the rows: its inconsistent rows split by
+        whether the row is contested, the predictions contradicted, the
+        predictions confirmed that no rival predicted, and whether anything
+        could contradict it at all. Returns (rank key, entry)."""
+        read = {r['id']: r['cells'][h['id']] for r in rows if h['id'] in r['cells']}
+        by_id = {r['id']: r for r in rows}
+        mine = self._lineage(h['id'], hyps)
+        rivals = [x for x in ids if x not in mine and h['id'] not in self._lineage(x, hyps)]
+        inc = [r for r, c in read.items() if c['reading'] == 'inconsistent']
+        con = [r for r, c in read.items() if c['reading'] == 'consistent']
+        split = lambda rs: {'undisputed': [tag(r) for r in rs if not contested[r]],
+                            'disputed': [tag(r) for r in rs if contested[r]]}
+        contradicted = {'undisputed': [], 'disputed': []}
+        for r in inc:
+            if read[r].get('tests'):
+                contradicted['disputed' if contested[r] else 'undisputed'].append(
+                    {'prediction': read[r]['tests'], 'row': tag(r)})
+        confirmed = [r for r in con if read[r].get('tests') and not any(
+            by_id[r]['cells'].get(x, {}).get('reading') == 'consistent' and by_id[r]['cells'][x].get('tests')
+            for x in rivals)]
+        predictions = [p for x in mine for p in hyps[x].get('predictions') or []]
+        observable = {p['id'] for p in predictions if p['observable']}
+        tested = {c.get('tests') for c in read.values()} & observable
+        immune = ('it names no prediction: add its predictions in the frame' if not predictions
+                  else 'none of its predictions is observable' if not observable
+                  else 'none of its observable predictions has been tested yet: name the prediction a cell tests '
+                       '("tests")' if not tested else None)
+        inconsistent = split(inc)
+        entry = {'id': h['id'], 'claim': h['claim'], **({'parent': h['parent']} if 'parent' in h else {}),
+                 **({'not_yet_grounded': True} if not h.get('proposed_in') else {}),
+                 **({'cannot_be_contradicted': immune} if immune else {}),
+                 'inconsistent_undisputed': inconsistent['undisputed'],
+                 'inconsistent_disputed': inconsistent['disputed'],
+                 **({'contradicted_predictions': contradicted} if any(contradicted.values()) else {}),
+                 'confirmed_discriminating': [{'prediction': read[r]['tests'], 'row': tag(r)} for r in confirmed],
+                 'consistent': [tag(r) for r in con],
+                 'consistent_discriminating': [r for r in con if r in discriminating],
+                 'neutral': sum(1 for c in read.values() if c['reading'] == 'neutral'),
+                 'not_applicable': sum(1 for c in read.values() if c['reading'] == 'not_applicable'),
+                 'unassessed': len(rows) - len(read)}
+        key = (len(inconsistent['undisputed']), len(inconsistent['disputed']),
+               -sum(1 for r in confirmed if not contested[r]), -len(confirmed))
+        return key, entry
+
     def matrix_show(self) -> dict:
         """The matrix read the ACH way, per question: only explanations answering
         one question compete (a trigger and a mechanism can both be true). An
         explanation is weakened by evidence inconsistent with it, not strengthened
         by a count of consistent rows, and a row discriminates only if it is
         inconsistent with some of the question's explanations and not others.
-        Re-validated from the file on every use."""
+        A contested row (disputed, reanalysed, retracted) never counts as fully
+        as a clean one, and an explanation that nothing could contradict is
+        flagged, not ranked first for free. Re-validated from the file on every use."""
         m, dropped = self._matrix_check(self._json('matrix.json', {}))
         hyps, rows = m['explanations'], m['evidence']
+        by_hid = {h['id']: h for h in hyps}
         questions = m['questions'] or [{'id': IMPLICIT, 'text': self._json('workspace.json', {}).get('question')}]
-        pulled, flags = self._evidence_status(), {}
+        pulled, flags, contested = self._evidence_status(), {}, {}
         for r in rows:
-            f = sorted({s['status'] for s in pulled.get(r['id'], []) + r['status']})
+            statuses = pulled.get(r['id'], []) + r['status']
+            f = sorted({s['status'] + (f'/{s["kind"]}' if s.get('kind') else '') for s in statuses})
             f += [r['design']] if r['design'] in WEAK_DESIGNS else []
             f += ['n not stated'] if r['n'] is None and r['design'] not in UNCOUNTED else []
             f += ['case definition not stated'] if r['case_definition'] is None and r['design'] not in UNCOUNTED else []
             flags[r['id']] = f
+            contested[r['id']] = any(s['status'] in CONTESTED for s in statuses)
         tag = lambda rid: f'{rid} ({", ".join(flags[rid])})' if flags[rid] else rid
         created, per_q, discriminating = self._created_year(), [], {}
         for q in questions:
@@ -1273,22 +1658,15 @@ class Workspace:
             discriminating.setdefault(q['id'], set())
             per = []
             for h in (h for h in hyps if h['answers'] == q['id']):
-                read = {r['id']: r['cells'][h['id']]['reading'] for r in rows if h['id'] in r['cells']}
-                inc = [r for r, v in read.items() if v == 'inconsistent']
-                con = [r for r, v in read.items() if v == 'consistent']
-                per.append(((sum(1 for r in inc if not flags[r]), len(inc)), {
-                    'id': h['id'], 'claim': h['claim'], **({'parent': h['parent']} if 'parent' in h else {}),
-                    'inconsistent': [tag(r) for r in inc], 'consistent': [tag(r) for r in con],
-                    'consistent_discriminating': [r for r in con if r in discriminating[q['id']]],
-                    'neutral': sum(1 for v in read.values() if v == 'neutral'),
-                    'not_applicable': sum(1 for v in read.values() if v == 'not_applicable'),
-                    'unassessed': len(rows) - len(read)}))
+                per.append(self._weigh(h, ids, by_hid, rows, contested, tag, discriminating[q['id']]))
             per = [e for _, e in sorted(per, key=lambda x: x[0])]
             years = [r['year'] for r in bearing if r['year'] is not None]
             out = {'id': q['id'], 'text': q['text'], 'explanations': per, 'discriminates': disc,
                    'fits_all_alike': alike, 'not_yet_weighed': unweighed,
                    'resting_on_one_row': [e['id'] for e in per if len(e['consistent']) == 1],
                    'resting_on_no_row': [e['id'] for e in per if not e['consistent']],
+                   'cannot_be_contradicted': [e['id'] for e in per if 'cannot_be_contradicted' in e],
+                   'not_yet_grounded': [e['id'] for e in per if e.get('not_yet_grounded')],
                    'newest_row_year': max(years, default=None)}
             if len(ids) < 2:
                 out['warning'] = ('fewer than two explanations answer this question: nothing is weighed against '

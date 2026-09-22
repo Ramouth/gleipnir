@@ -1,7 +1,12 @@
 """gl: Gleipnir's research tools, for an LLM working on a research task.
 
   gl.py init    WS "question"
+  gl.py frame   WS [FRAME.json]             (before any fetch: questions, rival explanations, their predictions,
+                what would discriminate, what to look for; with a file: validate and store it; without:
+                show it on one screen for the user to confirm or steer)
   gl.py fetch   WS URL [--publisher NAME]
+  gl.py original WS SOURCE_ID YYYY[-MM[-DD]] "exact words that state it" --note "why"
+                (the date of the document a copy reproduces: an archived copy of an older report)
   gl.py read    WS SOURCE_ID [--find "exact words"] [--around 1500]
   gl.py cut     WS SOURCE_ID "exact anchor words" [--before 200] [--after 600]
   gl.py check   WS ATOMS.json [--support]     (a JSON list of atoms; `-` reads stdin; the support
@@ -16,8 +21,9 @@
                 (ACT: verifies, qualifies, disputes, distorts; repeating and endorsing are read from the atom)
   gl.py accountability WS SOURCE_ID CATEGORY --basis "why"
                 (CATEGORY: peer_reviewed, edited, institutional, interested_party, expert, unedited, aggregator)
-  gl.py evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why"
-                (STATUS: retracted, corrected, disputed)
+  gl.py evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why" [--kind KIND]
+                (STATUS: retracted, corrected, reanalysed, disputed; a dispute takes --kind engages_data
+                 or objection)
   gl.py matrix  WS [MATRIX.json]            (questions, competing explanations x evidence; with a file:
                 validate and store it, replacing the last; without: show the matrix per question)
   gl.py compare WS "subject words" [--link-same-labels]
@@ -27,12 +33,13 @@
   gl.py passage WS PASSAGE_ID                (show a stored passage)
   gl.py review  WS ATOM_UID stated "exact words of the quote" --note "why" | withdrawn
   gl.py links   WS                           (entity pairs that may be the same thing)
-  gl.py link    WS ENTITY_A ENTITY_B --basis "why they are the same"
+  gl.py link    WS ENTITY_A ENTITY_B --basis "why they are the same"   (--undo --note "why" takes one back)
   gl.py status  WS
   gl.py contract                             (the atom contract to write atoms against)
 
-Output is JSON, except `read` and `contract`. A refusal exits with status 2 and
-says what to do instead.
+Output is JSON, except `read`, `contract` and the `frame` and `matrix` screens. A
+refusal exits with status 2 and says what to do instead; so does a flag the command
+does not use.
 """
 import argparse
 import json
@@ -42,15 +49,44 @@ from pathlib import Path
 from gleipnir.workspace import ToolError, Workspace
 
 
+#: The flags each command uses. Any other is refused, never silently ignored.
+USES = {'init': (), 'frame': (), 'fetch': ('publisher',), 'original': ('note', 'by'), 'read': ('find', 'around'),
+        'cut': ('before', 'after'), 'check': ('support',), 'add': (), 'origin': ('basis', 'by'),
+        'rests': ('note', 'by', 'undo'), 'relay': ('note', 'by', 'undo'), 'accountability': ('basis', 'by'),
+        'evidence': ('note', 'by', 'kind'), 'matrix': (), 'compare': ('link_same_labels',),
+        'explain': ('note', 'by'), 'pending': (), 'passage': (), 'review': ('note', 'by'), 'links': (),
+        'link': ('basis', 'by', 'undo', 'note'), 'status': (), 'contract': ()}
+DEFAULTS = {'around': 1500, 'before': 200, 'after': 600, 'support': False, 'undo': False, 'basis': '', 'by': 'llm',
+            'link_same_labels': False, 'note': ''}
+
+
+def unused_flags(a) -> str | None:
+    """Why the command refuses a flag it was given, or None."""
+    given = {k for k, v in vars(a).items() if v is not None and k not in ('command', 'args', 'store')}
+    extra = sorted(given - set(USES.get(a.command, given)))
+    flag = lambda x: '--' + x.replace('_', '-')
+    return (f'{a.command} does not take {", ".join(map(flag, extra))}; it takes '
+            f'{", ".join(map(flag, USES[a.command])) or "no flags"} (and --store)') if extra else None
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('command')
     ap.add_argument('args', nargs='*')
-    ap.add_argument('--publisher'); ap.add_argument('--find'); ap.add_argument('--around', type=int, default=1500)
-    ap.add_argument('--before', type=int, default=200); ap.add_argument('--after', type=int, default=600)
-    ap.add_argument('--support', action='store_true'); ap.add_argument('--undo', action='store_true'); ap.add_argument('--basis', default='')
-    ap.add_argument('--by', default='llm'); ap.add_argument('--link-same-labels', action='store_true'); ap.add_argument('--note', default=''); ap.add_argument('--store', type=Path, default=Path('raw'))
+    ap.add_argument('--publisher'); ap.add_argument('--find'); ap.add_argument('--around', type=int)
+    ap.add_argument('--before', type=int); ap.add_argument('--after', type=int)
+    ap.add_argument('--support', action='store_true', default=None)
+    ap.add_argument('--undo', action='store_true', default=None)
+    ap.add_argument('--basis'); ap.add_argument('--by'); ap.add_argument('--kind'); ap.add_argument('--note')
+    ap.add_argument('--link-same-labels', action='store_true', default=None)
+    ap.add_argument('--store', type=Path, default=Path('raw'))
     a = ap.parse_args()
+    if why := unused_flags(a):
+        print(json.dumps({'refused': why}), file=sys.stderr)
+        sys.exit(2)
+    for k, v in DEFAULTS.items():
+        if getattr(a, k) is None:
+            setattr(a, k, v)
     if a.command == 'contract':
         from gleipnir.atomiser import PROMPT
         print(PROMPT)
@@ -68,8 +104,14 @@ def main():
     try:
         if a.command == 'init':
             out = ws.init(rest[0])
+        elif a.command == 'frame':
+            if not rest:
+                print('\n'.join(ws.frame_show()['screen'])); return
+            out = ws.frame(json.loads(sys.stdin.read() if rest[0] == '-' else Path(rest[0]).read_text()))
         elif a.command == 'fetch':
             out = ws.fetch(rest[0], a.publisher)
+        elif a.command == 'original':
+            out = ws.original(rest[0], rest[1], rest[2], a.note, a.by)
         elif a.command == 'read':
             print(ws.read(rest[0], a.find, a.around)); return
         elif a.command == 'cut':
@@ -92,7 +134,7 @@ def main():
         elif a.command == 'accountability':
             out = ws.accountability(rest[0], rest[1], a.basis, a.by)
         elif a.command == 'evidence':
-            out = ws.evidence_status(rest[0], rest[1], rest[2], rest[3], a.note, a.by)
+            out = ws.evidence_status(rest[0], rest[1], rest[2], rest[3], a.note, a.by, a.kind)
         elif a.command == 'matrix':
             if not rest:
                 out = ws.matrix_show()                  # one screen: the grid, then one line per item
@@ -119,12 +161,13 @@ def main():
             out = ws.pending()
         elif a.command == 'passage':
             p = ws.passage(rest[0])
-            print(json.dumps({'passage': rest[0], 'source': p.source_id, 'source_date': p.source_date},
+            print(json.dumps({'passage': rest[0], 'source': p.source_id, 'source_date': p.source_date,
+                              'original_date': ws._original(ws._source(p.source_id))},
                              ensure_ascii=False)); print(ws._wrap(p.text)); return
         elif a.command == 'links':
             out = ws.link_candidates()
         elif a.command == 'link':
-            out = ws.link(rest[0], rest[1], a.basis, a.by)
+            out = ws.link(rest[0], rest[1], a.basis, a.by, a.undo, a.note)
         elif a.command == 'status':
             out = ws.status()
         else:

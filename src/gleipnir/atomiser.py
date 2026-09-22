@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gleipnir.claims import Predicate
 
-PROMPT_VERSION = 'atomise/2026-09-22.5'
+PROMPT_VERSION = 'atomise/2026-09-23.1'
 
 #: A date at the resolution the source supports: year, month or day.
 PARTIAL_DATE = r'^\d{4}(-\d{2}(-\d{2})?)?$'
@@ -67,6 +67,16 @@ RESEARCH_PREDICATES = {
     'is_marker_of': 'subject is a measurable sign of object (biomarker, test result)',
     'treats': 'subject relieves or cures object (value: outcome, trial)',
     'defines': 'subject (a criteria set, a standard) sets what counts as object',
+    # findings, positions and events: what an inquiry, study, court, agency or witness did
+    'concludes': 'subject (an inquiry, a study, a court) reaches object as its conclusion (value: the conclusion)',
+    'finds': 'subject reports object as a finding of its own examination or data (value: the finding)',
+    'recommends': 'subject advises object (a treatment, an action, a policy)',
+    'rejects': 'subject holds object false, unsupported or not to be done',
+    'is_defined_by': 'subject (a condition, a term, a category) is set by object (criteria, a standard, a law)',
+    'withholds': 'subject keeps object (a record, information) from someone (value: from whom)',
+    'testifies': 'subject states object as a witness, under oath or to an inquiry (value: what)',
+    'predicts': 'subject (an explanation, a model, a theory) expects object to be observed',
+    'constrains': 'subject limits what object can be (a timing rules out a sequence, a measurement bounds a value)',
     # releases and versions
     'is_released_on': 'value: the date subject is or was released',
     'has_feature': 'subject includes object (a feature, a change)',

@@ -96,7 +96,7 @@ def test_links_join_islands_only_with_a_basis(tmp_path):
         page = (b'<html><body><p>' + name + b' won 38 seats in 2026.</p>'
                 b'<p>Turnout was reported by the election authority after the count closed.</p></body></html>')
         sid = w.ingest(url, page, 200)['id']
-        pid = w.cut(sid, name.decode(), before=0, after=40)['passage']
+        pid = w.cut(sid, name.decode(), before=0, after=10)['passage']
         slug = name.decode().lower().replace(' ', '-')
         ent = f'local:{sid}#{slug}'
         w.add([{'passage_id': pid, 'quote': name.decode() + ' won 38 seats in 2026',
@@ -265,7 +265,7 @@ def matrix(p):
         'evidence': [
         {'id': 'graded-trial', 'passage': p['trial'], 'words': 'The Graded Trial randomised 641 patients',
          'design': 'rct', 'n': 641, 'case_definition': 'Oxford criteria',
-         'status': [{'status': 'disputed', 'passage': p['critique'], 'note': 'reanalysis',
+         'status': [{'status': 'disputed', 'kind': 'engages_data', 'passage': p['critique'], 'note': 'reanalysis',
                      'words': 'recovery rates fell sharply under the original protocol'}],
          'positions': [{'institution': 'the Institute', 'date': '2007', 'stance': 'endorses', 'on': 'H1',
                         'passage': p['inst'],
@@ -286,12 +286,12 @@ def test_matrix_ranks_by_inconsistency_and_flags_positions_on_disputed_rows(tmp_
     q = m['questions'][0]                       # no questions given: one implicit question, as before
     assert q['id'] == 'Q' and q['text'] == 'What causes the illness?'
     assert [e['id'] for e in q['explanations']] == ['H2', 'H1']
-    assert q['explanations'][1]['inconsistent'] == ['cytokine-study']
+    assert q['explanations'][1]['inconsistent_undisputed'] == ['cytokine-study']
     assert q['discriminates'] == [{'row': 'cytokine-study', 'readings': {'H1': 'inconsistent', 'H2': 'consistent'}}]
-    assert q['fits_all_alike'] == ['graded-trial (disputed)']   # consistent and neutral: it contradicts neither
+    assert q['fits_all_alike'] == ['graded-trial (disputed/engages_data)']   # consistent and neutral: it contradicts neither
     assert set(q['resting_on_one_row']) == {'H1', 'H2'}
     flag = m['positions_on_disputed_or_weak_rows'][0]
-    assert flag['institution'] == 'the Institute' and flag['row'] == 'graded-trial' and 'disputed' in flag['why']
+    assert flag['institution'] == 'the Institute' and flag['row'] == 'graded-trial' and 'disputed/engages_data' in flag['why']
     assert any('does not discriminate' in x for x in flag['why'])
     assert m['grid'][1].split()[:3] == ['graded-trial', 'C', 'N']
 
@@ -318,7 +318,7 @@ def test_matrix_refuses_defects_part_by_part_and_says_what_to_do(tmp_path):
     assert 'date' in why[('cytokine-study', 'position')]
     assert out['stored'] == {'questions': [], 'explanations': ['H1', 'H2'], 'evidence': ['cytokine-study']}
     q = w.matrix_show()['questions'][0]
-    assert all(e['inconsistent'] == [] for e in q['explanations']) and q['resting_on_no_row'] == ['H1']
+    assert all(e['inconsistent_undisputed'] == e['inconsistent_disputed'] == [] for e in q['explanations']) and q['resting_on_no_row'] == ['H1']
 
 
 def test_an_edited_matrix_file_is_revalidated_on_use(tmp_path):
@@ -330,10 +330,10 @@ def test_an_edited_matrix_file_is_revalidated_on_use(tmp_path):
     (w.root / 'matrix.json').write_text(json.dumps(stored))
     m = w.matrix_show()
     assert m['dropped_on_use'][0]['cell'] == 'H1'
-    assert all(e['inconsistent'] == [] for e in m['questions'][0]['explanations'])
-    assert 'disputed' not in m['positions_on_disputed_or_weak_rows'][0]['why']
-    w.evidence_status('graded-trial', 'disputed', p['critique'], 'recovery rates fell sharply', note='reanalysis')
-    assert 'disputed' in w.matrix_show()['positions_on_disputed_or_weak_rows'][0]['why']
+    assert all(e['inconsistent_undisputed'] == e['inconsistent_disputed'] == [] for e in m['questions'][0]['explanations'])
+    assert not any(x.startswith('disputed') for x in m['positions_on_disputed_or_weak_rows'][0]['why'])
+    w.evidence_status('graded-trial', 'disputed', p['critique'], 'recovery rates fell sharply', note='reanalysis', kind='engages_data')
+    assert 'disputed/engages_data' in w.matrix_show()['positions_on_disputed_or_weak_rows'][0]['why']
 
 
 def test_a_matrix_row_close_to_a_rests_id_must_use_it(ws):
@@ -585,3 +585,278 @@ def test_a_finding_or_a_record_is_not_flagged_for_lacking_an_n(tmp_path):
     m['evidence'][0]['design'] = 'testimony'
     w.matrix(m)
     assert 'testimony' in w.matrix_show()['positions_on_disputed_or_weak_rows'][0]['why']
+
+
+# ── the frame: questions, rivals and predictions, before any fetching ──────
+def framed():
+    return {'questions': [{
+        'id': 'course', 'text': 'What maintains the illness?',
+        'explanations': [
+            {'id': 'H1', 'claim': 'deconditioning and fear of activity maintain it', 'predictions': [
+                {'id': 'H1-exercise', 'text': 'graded exercise improves outcomes', 'observable': True},
+                {'id': 'H1-no-immune', 'text': 'no immune difference from controls', 'observable': True}]},
+            {'id': 'H2', 'claim': 'post-infectious immune dysregulation', 'predictions': [
+                {'id': 'H2-cytokines', 'text': 'altered cytokines early in illness', 'observable': True}]},
+            {'id': 'H3', 'claim': 'an agent no test can detect', 'predictions': [
+                {'id': 'H3-hidden', 'text': 'nothing measurable changes', 'observable': False}]}],
+        'discriminating': ['immune markers in patients against controls'],
+        'look_for': ['the largest cohort with immune markers', 'the newest trial of graded exercise']}]}
+
+
+def grounding(p):
+    return [{'id': 'H1', 'proposed_in': {'passage': p['decon'], 'words': 'maintained by deconditioning and fear'}}]
+
+
+def test_a_frame_is_checked_part_by_part_and_shown_for_steering(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    with pytest.raises(ToolError, match='"questions"'):
+        w.frame({'explanations': []})
+    bad = framed()
+    bad['questions'][0]['explanations'][2]['predictions'] = []
+    bad['questions'][0]['explanations'][1]['predictions'].append({'id': 'H2-x', 'text': 'more'})
+    bad['questions'].append({'id': 'onset', 'text': 'What sets it off?', 'explanations': [], 'discriminating': ['x']})
+    why = {r.get('prediction') or r.get('explanation') or r.get('question'): r['why'] for r in w.frame(bad)['refused']}
+    assert 'checkable prediction' in why['H3'] and 'observable' in why['H2-x'] and 'look_for' in why['onset']
+    assert w.frame(framed())['refused'] == []
+    screen = '\n'.join(w.frame_show()['screen'])
+    assert 'H1  deconditioning' in screen and screen.count('not yet grounded in a passage') == 3
+    assert 'H3-hidden  not observable' in screen and 'cannot be contradicted' in screen
+    assert 'look for: the largest cohort' in screen
+    w.matrix({'explanations': grounding(p), 'evidence': []})
+    assert f'grounded in {p["decon"]}' in '\n'.join(w.frame_show()['screen'])
+
+
+def test_the_matrix_inherits_the_frame_and_grounds_it(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.frame(framed())
+    m = matrix(p)
+    m['explanations'] = grounding(p) + [{'id': 'H2', 'claim': 'something else', 'proposed_in': {
+        'passage': p['immune'], 'words': 'an infection triggers lasting immune dysregulation'}}]
+    out = w.matrix(m)
+    assert out['refused'] == [{'explanation': 'H2', 'why': 'H2 is in the frame: change its claim there; '
+                                                           'here it takes only "proposed_in"'}]
+    assert out['stored']['questions'] == ['course'] and out['stored']['explanations'] == ['H1', 'H2', 'H3']
+    stored = json.loads((w.root / 'matrix.json').read_text())
+    assert stored['questions'] == [] and all('claim' not in h for h in stored['explanations'])   # inherited, not copied
+    q = w.matrix_show()['questions'][0]
+    assert q['id'] == 'course' and q['not_yet_grounded'] == ['H3']      # H2 was grounded; only its claim was refused
+    f = framed()
+    f['questions'][0]['explanations'][1]['claim'] = 'immune dysregulation after an infection'
+    w.frame(f)
+    claims = [e['claim'] for e in w.matrix_show()['questions'][0]['explanations']]
+    assert 'immune dysregulation after an infection' in claims
+
+
+def predicted(p):
+    m = matrix(p)
+    m['explanations'] = grounding(p)
+    words = 'found altered cytokine profiles early in illness'
+    m['evidence'][0]['cells'] = {
+        'H1': {'reading': 'consistent', 'words': 'graded exercise produced modest improvement', 'tests': 'H1-exercise'},
+        'H2': {'reading': 'neutral'}, 'H3': {'reading': 'neutral'}}
+    m['evidence'][1]['cells'] = {'H1': {'reading': 'inconsistent', 'words': words, 'tests': 'H1-no-immune'},
+                                 'H2': {'reading': 'consistent', 'words': words, 'tests': 'H2-cytokines'},
+                                 'H3': {'reading': 'neutral'}}
+    return m
+
+
+def test_predictions_show_what_is_contradicted_and_what_only_one_explanation_foresaw(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.frame(framed())
+    assert w.matrix(predicted(p))['refused'] == []
+    q = w.matrix_show()['questions'][0]
+    h2, h3, h1 = q['explanations']
+    assert [h2['id'], h3['id'], h1['id']] == ['H2', 'H3', 'H1']   # one confirmed prediction ranks above none
+    assert h1['contradicted_predictions'] == {'undisputed': [{'prediction': 'H1-no-immune', 'row': 'cytokine-study'}],
+                                              'disputed': []}
+    assert h1['confirmed_discriminating'] == [{'prediction': 'H1-exercise',
+                                               'row': 'graded-trial (disputed/engages_data)'}]
+    assert h2['confirmed_discriminating'] == [{'prediction': 'H2-cytokines', 'row': 'cytokine-study'}]
+    assert h3['cannot_be_contradicted'] == 'none of its predictions is observable'
+    assert q['cannot_be_contradicted'] == ['H3']
+    m = predicted(p)
+    del m['evidence'][1]['cells']['H2']['tests']
+    w.matrix(m)
+    h2 = next(e for e in w.matrix_show()['questions'][0]['explanations'] if e['id'] == 'H2')
+    assert 'tested yet' in h2['cannot_be_contradicted'] and h2['confirmed_discriminating'] == []
+
+
+def test_a_cell_tests_only_an_observable_prediction_of_its_own_explanation(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.frame(framed())
+    m = predicted(p)
+    m['evidence'][1]['cells']['H3'] = {'reading': 'inconsistent', 'words': 'found altered cytokine', 'tests': 'H3-hidden'}
+    m['evidence'][1]['cells']['H2']['tests'] = 'H1-exercise'
+    m['evidence'][0]['cells']['H2'] = {'reading': 'neutral', 'tests': 'H2-cytokines'}
+    why = {(r['row'], r['cell']): r['why'] for r in w.matrix(m)['refused']}
+    assert 'marked not observable' in why[('cytokine-study', 'H3')]
+    assert 'no prediction of H2' in why[('cytokine-study', 'H2')] and 'H2-cytokines' in why[('cytokine-study', 'H2')]
+    assert 'reads consistent' in why[('graded-trial', 'H2')]
+
+
+def test_a_disputed_row_never_counts_as_fully_as_a_clean_one(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = matrix(p)
+    m['evidence'][0]['cells'] = {'H1': {'reading': 'inconsistent', 'words': 'graded exercise produced modest'},
+                                 'H2': {'reading': 'consistent', 'words': 'graded exercise produced modest'}}
+    m['evidence'][1]['cells'] = {'H1': {'reading': 'consistent', 'words': 'found altered cytokine profiles'},
+                                 'H2': {'reading': 'inconsistent', 'words': 'found altered cytokine profiles'}}
+    w.matrix(m)
+    h1, h2 = w.matrix_show()['questions'][0]['explanations']
+    assert (h1['id'], h1['inconsistent_disputed'], h1['inconsistent_undisputed']) == \
+        ('H1', ['graded-trial (disputed/engages_data)'], [])
+    assert h2['inconsistent_undisputed'] == ['cytokine-study']
+    m['evidence'][0]['status'] = [{'status': 'reanalysed', 'passage': p['critique'], 'note': 'the same data again',
+                                   'words': 'recovery rates fell sharply'}]
+    w.matrix(m)
+    assert w.matrix_show()['questions'][0]['explanations'][0]['inconsistent_disputed'] == ['graded-trial (reanalysed)']
+
+
+def test_a_dispute_says_whether_it_engages_the_data(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.matrix(matrix(p))
+    with pytest.raises(ToolError, match='engages_data'):
+        w.evidence_status('graded-trial', 'disputed', p['critique'], 'recovery rates fell sharply', note='x')
+    with pytest.raises(ToolError, match='only a dispute'):
+        w.evidence_status('graded-trial', 'corrected', p['critique'], 'recovery rates fell sharply', note='x',
+                          kind='objection')
+    w.evidence_status('graded-trial', 'disputed', p['critique'], 'recovery rates fell sharply', note='x',
+                      kind='objection')
+    assert 'disputed/objection' in w.matrix_show()['grid'][1]
+    m = matrix(p)
+    del m['evidence'][0]['status'][0]['kind']
+    assert 'needs its kind' in w.matrix(m)['refused'][0]['why']
+
+
+def test_n_case_definition_and_year_may_stand_in_other_passages_of_the_source(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    row = {'id': 'graded-trial', 'passage': p['critique'], 'words': 'A published reanalysis of the Graded Trial',
+           'design': 'rct', 'n': 641, 'case_definition': 'Oxford criteria', 'year': 2011}
+    assert 'n_in' in w.matrix({'explanations': [], 'evidence': [row]})['refused'][0]['why']
+    row.update(n_in=p['trial'], case_definition_in=p['trial'], year_in=p['trial'])
+    assert w.matrix({'explanations': [], 'evidence': [row]})['refused'] == []
+    other = w.ingest('https://other.example/a', STUDIES.replace(b'641', b'642'), 200)['id']
+    row['n_in'] = w.cut(other, 'The Graded Trial randomised', before=0, after=40)['passage']
+    assert "row's source" in w.matrix({'explanations': [], 'evidence': [row]})['refused'][0]['why']
+
+
+# ── less ceremony: cuts ─────────────────────────────────────────────────────
+def test_a_cut_ends_at_a_sentence_and_is_never_cut_twice(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    page = b'<html><body><p>' + NAV + b'. The inquiry examined the pier and found no fatigue cracks at all. ' \
+           b'It closed in 2024.</p></body></html>'
+    sid = w.ingest('https://inquiry.example/a', page, 200)['id']
+    first = w.cut(sid, 'The inquiry examined', before=0, after=10)
+    assert w.passage(first['passage']).text.endswith('no fatigue cracks at all.')
+    again = w.cut(sid, 'The inquiry examined', before=0, after=10)
+    inside = w.cut(sid, 'found no fatigue', before=0, after=5)
+    assert again['passage'] == inside['passage'] == first['passage'] and again['existing'] is True
+    assert len(w.passages()) == 1
+
+
+# ── fetching ────────────────────────────────────────────────────────────────
+def test_a_page_in_another_encoding_is_decoded_by_its_declared_charset(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    body = b'<p>Le caf\xe9 de la r\xe9publique ' + NAV + b'</p></body></html>'
+    declared = w.ingest('https://a.example/x', b'<html><head><meta charset="iso-8859-1"></head><body>' + body, 200)
+    assert 'Le café de la république' in w.read(declared['id'])
+    quoted = w.ingest('https://b.example/y', b'<html><body><p>\x93quoted\x94 ' + NAV + b'</p></body></html>', 200)
+    assert '“quoted”' in w.read(quoted['id'])            # undeclared: Windows-1252
+
+
+RECORD = {'version': '6.9', 'hitCount': 1, 'resultList': {'result': [{
+    'id': '1', 'title': 'A cohort of patients followed after infection', 'pubYear': '2019',
+    'firstPublicationDate': '2019-04-02', 'abstractText': 'Of 17 participants, most reported onset after an '
+                                                          'infection, which the authors describe in detail.'}]}}
+
+
+def test_a_literature_record_is_dated_by_its_own_fields(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    base = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?query='
+    out = w.ingest(base + '1', json.dumps(RECORD).encode(), 200)
+    assert (out['published_on'], out['date_basis']) == ('2019-04-02', 'record firstPublicationDate')
+    two = {**RECORD, 'hitCount': 2, 'resultList': {'result': RECORD['resultList']['result'] * 2}}
+    assert w.ingest(base + '2', json.dumps(two).encode(), 200)['published_on'] is None   # a list dates none
+    xml = (b'<?xml version="1.0" encoding="UTF-8"?><responseWrapper><hitCount>1</hitCount><resultList><result>'
+           b'<pubYear>2001</pubYear><abstractText>Of 17 participants, most reported onset after an infection, which '
+           b'the authors describe in detail.</abstractText></result></resultList></responseWrapper>')
+    out = w.ingest(base + '3', xml, 200)
+    assert (out['published_on'], out['date_basis']) == ('2001', 'record pubYear')
+
+
+def test_the_same_text_under_two_hosts_is_one_document(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    first = w.ingest('https://example.org/a', PAGE, 200)['id']
+    out = w.ingest('https://mirror.example/b', PAGE.replace(b'<p>', b'<p class="copy">'), 200)
+    assert out['id'] != first and first in out['note'] and 'one document, not two' in out['note']
+
+
+def test_an_archived_copy_records_the_original_date_in_its_own_words(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    page = (b'<html><head><meta name="dc.date" content="2016-05-01"></head><body><p>This report was submitted to '
+            b'the minister in September 1964 by the commission. ' + NAV + b'</p></body></html>')
+    sid = w.ingest('https://archive.example/report', page, 200)['id']
+    with pytest.raises(ToolError, match='1963'):
+        w.original(sid, '1963', 'submitted to the minister', note='x')
+    with pytest.raises(ToolError, match='note'):
+        w.original(sid, '1964-09', 'the minister in September 1964')
+    out = w.original(sid, '1964-09', 'the minister in September 1964', note='a 2016 web copy of the 1964 report')
+    assert out == {'source': sid, 'original_date': '1964-09', 'copy_date': '2016-05-01'}
+    assert 'original 1964-09' in w.read(sid)
+    pid = w.cut(sid, 'This report was submitted', before=0, after=20)['passage']
+    row = {'id': 'report', 'passage': pid, 'words': 'This report was submitted', 'design': 'official_finding',
+           'n': None, 'case_definition': None, 'year': 1964}
+    assert w.matrix({'explanations': [], 'evidence': [row]})['refused'] == []
+    sources = json.loads((w.root / 'sources.json').read_text())
+    sources[0]['original']['words'] = 'forged in 1950 words'
+    (w.root / 'sources.json').write_text(json.dumps(sources))
+    assert 'original' not in w.read(sid).splitlines()[0]
+
+
+# ── vocabulary and CLI ──────────────────────────────────────────────────────
+def test_findings_and_events_have_shared_relations():
+    from gleipnir.atomiser import PREDICATES, PROMPT
+    new = {'concludes', 'finds', 'recommends', 'rejects', 'is_defined_by', 'withholds', 'testifies', 'predicts',
+           'constrains'}
+    assert new <= PREDICATES and all(f'- {p}:' in PROMPT for p in new)
+
+
+def test_a_link_can_be_undone_with_a_note(ws):
+    w, sid, pid = ws
+    a, b = 'local:x#one', 'local:y#two'
+    with open(w.root / 'links.jsonl', 'a') as f:
+        f.write(json.dumps({'a': a, 'b': b, 'basis': 'misread'}) + '\n')
+    assert w._linked()(b) == a
+    with pytest.raises(ToolError, match='note'):
+        w.link(a, b, basis='', undo=True)
+    with pytest.raises(ToolError, match='nothing to undo'):
+        w.link(a, 'local:z#three', basis='', undo=True, note='x')
+    w.link(b, a, basis='', undo=True, note='not the same thing')
+    assert w._linked()(b) == b
+
+
+def gl(*args):
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    return subprocess.run([sys.executable, str(root / 'scripts/gl.py'), *map(str, args)], capture_output=True,
+                          text=True, env={'PYTHONPATH': str(root / 'src')})
+
+
+def test_the_cli_refuses_a_flag_the_command_does_not_use(tmp_path):
+    ws, store = tmp_path / 'ws', tmp_path / 'raw'
+    assert gl('init', ws, 'q', '--store', store).returncode == 0
+    out = gl('status', ws, '--undo', '--store', store)
+    assert out.returncode == 2 and 'status does not take --undo' in out.stderr
+    out = gl('cut', ws, 'web:x/0', 'words', '--note', 'n', '--store', store)
+    assert out.returncode == 2 and 'cut does not take --note; it takes --before, --after' in out.stderr
+    out = gl('link', ws, 'local:x#a', 'local:y#b', '--undo', '--note', 'wrong', '--store', store)
+    assert out.returncode == 2 and 'nothing to undo' in out.stderr
+    out = gl('frame', ws, '--store', store)
+    assert out.returncode == 2 and 'no frame yet' in out.stderr
