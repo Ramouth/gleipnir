@@ -23,6 +23,9 @@ recomputed from them on use:
   declaration too, grounded in words from a stored passage of the atom's own
   source: eight outlets reporting one study are eight reports of one piece of
   evidence, and an atom with no evidence declared never counts as independent evidence;
+- the matrix of competing explanations is re-validated from matrix.json on
+  every use: each explanation, cell, status and institutional position must
+  quote a stored passage, and a study's n and case definition must stand in it;
 - a small-model flag reaches the LLM as a neutral question, never with a score;
 - source text is wrapped in markers carrying a fresh random nonce, so a page
   cannot close the data block and speak as the tool.
@@ -64,6 +67,21 @@ TRACKING = re.compile(r'^(utm_\w+|fbclid|gclid|ref|via|amp)$', re.I)
 ARXIV_ORDER = 'arxiv identifier (month of first version)'
 RELAY_ACTS = ('verifies', 'qualifies', 'disputes', 'distorts')
 EVIDENCE_STATUS = ('retracted', 'corrected', 'disputed')
+READINGS = ('consistent', 'inconsistent', 'neutral')
+DESIGNS = {
+    'meta_analysis': 'pooled analysis of several studies',
+    'systematic_review': 'structured review of the literature',
+    'rct': 'randomised controlled trial',
+    'cohort': 'a group followed over time',
+    'case_control': 'cases compared with controls',
+    'cross_sectional': 'one time point: a survey, a biomarker comparison',
+    'mechanistic': 'laboratory or physiological study of a mechanism',
+    'animal': 'animal or cell model',
+    'case_series': 'several patients described, no controls',
+    'case_report': 'one patient',
+    'expert_opinion': 'a view without new data',
+}
+WEAK_DESIGNS = ('case_series', 'case_report', 'expert_opinion')
 ACCOUNTABILITY = {
     'peer_reviewed': 'a journal or preprint server with review',
     'edited': 'a newsroom or publisher with editors and a corrections practice',
@@ -708,8 +726,9 @@ class Workspace:
         an erratum, a published critique). Retracted evidence stops counting."""
         if status not in EVIDENCE_STATUS:
             raise ToolError(f'status must be one of {", ".join(EVIDENCE_STATUS)}')
-        if evidence not in self._evidence_ids():
-            raise ToolError(f'unknown evidence {evidence}: declare it with `rests` first')
+        matrix_rows = {r.get('id') for r in self._json('matrix.json', {}).get('evidence', []) if isinstance(r, dict)}
+        if evidence not in self._evidence_ids() | matrix_rows:
+            raise ToolError(f'unknown evidence {evidence}: declare it with `rests` or as a `matrix` row first')
         if len(_ws(words).split()) < 3 or not note.strip() or _ws(words) not in _ws(self.passage(passage_id).text):
             raise ToolError(f'name at least three exact words of {passage_id} that say so, and a --note')
         entry = {'evidence': evidence, 'status': status, 'passage': passage_id, 'words': words, 'note': note,
@@ -904,6 +923,181 @@ class Workspace:
             f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         self.log('explain', group=group, reason=reason, passage=passage_id)
         return entry
+
+    # ── competing explanations: a light matrix after Heuer's ACH ─────────────
+    def _quoted(self, pid, words, what: str) -> str | None:
+        """Why the words do not stand in the passage, or None if they do."""
+        if not isinstance(pid, str) or not isinstance(words, str) or len(_ws(words).split()) < 3:
+            return f'{what}: give a passage id and at least three exact words from it'
+        try:
+            text = self.passage(pid).text
+        except ToolError as e:
+            return f'{what}: {e}'
+        return None if _ws(words) in _ws(text) else \
+            f'{what}: the words are not in {pid}; copy them again from `passage WS {pid}`'
+
+    def _row_defect(self, r: dict, rid: str, seen: set, known: set) -> str | None:
+        import difflib
+        if not rid:
+            return 'a row needs an evidence id: one from `rests`, or a new one for a study you read in a passage'
+        if rid in seen:
+            return f'duplicate row {rid}: one row per piece of evidence'
+        if rid not in known and (near := difflib.get_close_matches(rid, sorted(known), n=3, cutoff=0.75)):
+            return f'{rid} is close to the `rests` ids {near}: use the same id for the same study'
+        if why := self._quoted(r.get('passage'), r.get('words'), 'evidence'):
+            return why
+        if r.get('design') not in DESIGNS:
+            return 'design must be one of: ' + '; '.join(f'{k} ({v})' for k, v in DESIGNS.items())
+        text = self.passage(r['passage']).text
+        n, cd = r.get('n'), r.get('case_definition')
+        if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < 1 or not re.search(
+                rf'(?<![\d.]){n}(?!\d)', re.sub(r'(?<=\d)[,   ](?=\d{3}(?!\d))', '', text))):
+            return f'n={n!r} is not a number stated in {r["passage"]}: cut the passage that states it, or write null'
+        if cd is not None and (not isinstance(cd, str) or not cd.strip() or _ws(cd) not in _ws(text)):
+            return (f'case_definition must be words of {r["passage"]} (e.g. "Fukuda criteria"), or null '
+                    'if the passage does not say who counted as a case')
+        return None
+
+    def _matrix_check(self, data) -> tuple[dict, list[dict]]:
+        """The part of a matrix that stands, in the submitted form, and every
+        refused part with what to do instead. Run on submit and on every use."""
+        if not isinstance(data, dict):
+            raise ToolError('a matrix is a JSON object with "explanations" and "evidence" lists')
+        refused, hyps = [], {}
+        for h in data.get('explanations') or []:
+            h = h if isinstance(h, dict) else {}
+            hid, where = str(h.get('id') or '').strip(), h.get('proposed_in')
+            where = where if isinstance(where, dict) else {}
+            why = ('an explanation needs an id and a claim' if not hid or not str(h.get('claim') or '').strip()
+                   else f'duplicate explanation {hid}' if hid in hyps
+                   else self._quoted(where.get('passage'), where.get('words'),
+                                     'proposed_in (the passage that proposes it and its words)'))
+            if why:
+                refused.append({'explanation': hid or '?', 'why': why})
+            else:
+                hyps[hid] = {'id': hid, 'claim': h['claim'], 'proposed_in': {k: where[k] for k in ('passage', 'words')},
+                             **({'parent': h['parent']} if h.get('parent') is not None else {})}
+        changed = True
+        while changed:                      # a sub-hypothesis needs a standing parent, and no cycle
+            changed = False
+            for hid, h in list(hyps.items()):
+                p, seen = h.get('parent'), {hid}
+                while p in hyps and p not in seen:
+                    seen.add(p)
+                    p = hyps[p].get('parent')
+                if p is not None:
+                    refused.append({'explanation': hid, 'why': f'parent {h["parent"]} is unknown or makes a cycle; '
+                                    'drop "parent" to keep it flat'})
+                    del hyps[hid]
+                    changed = True
+        rows, seen, known = [], set(), self._evidence_ids()
+        for r in data.get('evidence') or []:
+            r = r if isinstance(r, dict) else {}
+            rid = str(r.get('id') or '').strip()
+            if why := self._row_defect(r, rid, seen, known):
+                refused.append({'row': rid or '?', 'why': why})
+                continue
+            seen.add(rid)
+            row = {'id': rid, **{k: r.get(k) for k in ('passage', 'words', 'design', 'n', 'case_definition')},
+                   'status': [], 'positions': [], 'cells': {}}
+            for s in r.get('status') or []:
+                s = s if isinstance(s, dict) else {}
+                why = ('status must be one of ' + ', '.join(EVIDENCE_STATUS) if s.get('status') not in EVIDENCE_STATUS
+                       else 'a status needs a "note": what the notice or critique says' if not str(s.get('note') or '').strip()
+                       else self._quoted(s.get('passage'), s.get('words'), 'status (the notice or critique)'))
+                if why:
+                    refused.append({'row': rid, 'part': 'status', 'why': why})
+                else:
+                    row['status'].append({k: s[k] for k in ('status', 'passage', 'words', 'note')})
+            for p in r.get('positions') or []:
+                p = p if isinstance(p, dict) else {}
+                why = ('a position needs the institution' if not str(p.get('institution') or '').strip()
+                       else 'a position needs its date: YYYY, YYYY-MM or YYYY-MM-DD' if not self._dated(p.get('date'))
+                       else f'"on" names no standing explanation: {p.get("on")}' if p.get('on') is not None
+                       and p.get('on') not in hyps
+                       else self._quoted(p.get('passage'), p.get('words'), 'position (the words where it takes it)'))
+                if why:
+                    refused.append({'row': rid, 'part': 'position', 'why': why})
+                else:
+                    row['positions'].append({k: p.get(k) for k in ('institution', 'date', 'on', 'passage', 'words')})
+            cells = r.get('cells') if isinstance(r.get('cells'), dict) else {}
+            for hid, c in cells.items():
+                c = c if isinstance(c, dict) else {}
+                pid = c.get('passage') or r['passage']
+                why = (f'no standing explanation {hid}' if hid not in hyps
+                       else 'reading must be one of ' + ', '.join(READINGS) if c.get('reading') not in READINGS
+                       else None if c.get('reading') == 'neutral' and not c.get('words')
+                       else self._quoted(pid, c.get('words'), f'cell {hid} (the words that make it {c["reading"]})'))
+                if why:
+                    refused.append({'row': rid, 'cell': hid, 'why': why})
+                else:
+                    row['cells'][hid] = {'reading': c['reading'], 'passage': pid, 'words': c.get('words'),
+                                         **({'note': c['note']} if c.get('note') else {})}
+            rows.append(row)
+        return {'explanations': list(hyps.values()), 'evidence': rows}, refused
+
+    @staticmethod
+    def _dated(value) -> bool:
+        m = re.fullmatch(r'(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?', value) if isinstance(value, str) else None
+        return bool(m) and (m.group(2) is None or 1 <= int(m.group(2)) <= 12) and \
+            (m.group(3) is None or _valid(*m.groups()) is not None)
+
+    def matrix(self, data) -> dict:
+        """Store a matrix of competing explanations against evidence. The file is
+        the whole matrix: each submission replaces the stored one, keeping only
+        what passes."""
+        m, refused = self._matrix_check(data)
+        self._save('matrix.json', m)
+        self.log('matrix', explanations=len(m['explanations']), rows=len(m['evidence']), refused=len(refused))
+        return {'stored': {'explanations': [h['id'] for h in m['explanations']],
+                           'evidence': [r['id'] for r in m['evidence']]},
+                'refused': refused,
+                **({'next': 'fix each refused part in your file and submit the whole file again'} if refused else {})}
+
+    def matrix_show(self) -> dict:
+        """The matrix read the ACH way: an explanation is weakened by evidence
+        inconsistent with it, not strengthened by a count of consistent rows,
+        and only a row that reads differently across explanations can tell
+        them apart. Re-validated from the file on every use."""
+        m, dropped = self._matrix_check(self._json('matrix.json', {}))
+        hyps, rows = m['explanations'], m['evidence']
+        pulled, flags, diagnostic, same, few = self._evidence_status(), {}, [], [], []
+        for r in rows:
+            f = sorted({s['status'] for s in pulled.get(r['id'], []) + r['status']})
+            f += [r['design']] if r['design'] in WEAK_DESIGNS else []
+            f += ['n not stated'] if r['n'] is None else []
+            f += ['case definition not stated'] if r['case_definition'] is None else []
+            flags[r['id']] = f
+            readings = [c['reading'] for c in r['cells'].values()]
+            (diagnostic if len(set(readings)) > 1 else same if len(readings) > 1 else few).append(r['id'])
+        tag = lambda rid: f'{rid} ({", ".join(flags[rid])})' if flags[rid] else rid
+        per = []
+        for h in hyps:
+            read = {r['id']: r['cells'][h['id']]['reading'] for r in rows if h['id'] in r['cells']}
+            inc = [r for r, v in read.items() if v == 'inconsistent']
+            con = [r for r, v in read.items() if v == 'consistent']
+            per.append(((sum(1 for r in inc if not flags[r]), len(inc)), {
+                'id': h['id'], 'claim': h['claim'], **({'parent': h['parent']} if 'parent' in h else {}),
+                'inconsistent': [tag(r) for r in inc], 'consistent': [tag(r) for r in con],
+                'consistent_diagnostic': [r for r in con if r in diagnostic],
+                'neutral': sum(1 for v in read.values() if v == 'neutral'), 'unassessed': len(rows) - len(read)}))
+        per = [e for _, e in sorted(per, key=lambda x: x[0])]
+        on_weak = [{'institution': p['institution'], 'date': p['date'], 'on': p['on'], 'row': r['id'],
+                    'why': flags[r['id']] + (['non-diagnostic: fits every explanation alike'] if r['id'] in same else [])}
+                   for r in rows for p in r['positions'] if flags[r['id']] or r['id'] in same]
+        width = max([len(r['id']) for r in rows] + [3])
+        grid = [f'{"row":<{width}}  ' + ' '.join(h['id'] for h in hyps)] + [
+            f'{r["id"]:<{width}}  ' + ' '.join((r['cells'][h['id']]['reading'][0].upper() if h['id'] in r['cells']
+                                                else '.').center(len(h['id'])) for h in hyps)
+            + f'  {r["design"]} n={r["n"] or "?"} {r["case_definition"] or "case def ?"}'
+            + (f'  [{"; ".join(flags[r["id"]])}]' if flags[r['id']] else '') for r in rows]
+        self.log('matrix_show', explanations=len(hyps), rows=len(rows), dropped=len(dropped))
+        return {'grid': grid, 'explanations': per,
+                'diagnostic': diagnostic, 'non_diagnostic': same, 'assessed_against_one_or_none': few,
+                'resting_on_one_row': [e['id'] for e in per if len(e['consistent']) == 1],
+                'resting_on_no_row': [e['id'] for e in per if not e['consistent']],
+                'positions_on_disputed_or_weak_rows': on_weak,
+                **({'dropped_on_use': dropped} if dropped else {})}
 
     def status(self) -> dict:
         sources = self.sources()

@@ -17,6 +17,8 @@
                 (CATEGORY: peer_reviewed, edited, institutional, interested_party, expert, unedited, aggregator)
   gl.py evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why"
                 (STATUS: retracted, corrected, disputed)
+  gl.py matrix  WS [MATRIX.json]            (competing explanations x evidence; with a file: validate
+                and store it, replacing the last; without: show the matrix)
   gl.py compare WS "subject words" [--link-same-labels]
   gl.py explain WS "SUBJECT|RELATION" REASON PASSAGE_ID "exact quote" --note "why"
                 (REASON: time, definition, speaker, copying, hedge, error, unexplained)
@@ -90,6 +92,17 @@ def main():
             out = ws.accountability(rest[0], rest[1], a.basis, a.by)
         elif a.command == 'evidence':
             out = ws.evidence_status(rest[0], rest[1], rest[2], rest[3], a.note, a.by)
+        elif a.command == 'matrix':
+            if not rest:
+                out = ws.matrix_show()                  # one screen: the grid, then one line per item
+                print('\n'.join(out.pop('grid')))
+                for e in out.pop('explanations'):
+                    print(json.dumps(e, ensure_ascii=False))
+                for k, v in out.items():
+                    print(f'{k}: {json.dumps(v, ensure_ascii=False)}')
+                return
+            else:
+                out = ws.matrix(json.loads(sys.stdin.read() if rest[0] == '-' else Path(rest[0]).read_text()))
         elif a.command == 'compare':
             out = ws.compare(rest[0], a.link_same_labels)
         elif a.command == 'explain':

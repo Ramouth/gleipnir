@@ -232,3 +232,108 @@ def test_an_atom_can_rest_on_two_studies_and_a_declaration_can_be_taken_back(ws)
     w.relay([uid], 'disputes', 'sold its stake', note='x')
     w.relay([uid], 'disputes', '', note='wrong atom', undo=True)
     assert w.compare('Example Holding')[0]['rows'][0]['act'] == 'endorses'
+
+
+STUDIES = (b'<html><body><p>Some authors propose that fatigue is maintained by deconditioning and fear of activity.</p>'
+           b'<p>Others propose that an infection triggers lasting immune dysregulation in patients.</p>'
+           b'<p>The Graded Trial randomised 641 patients meeting the Oxford criteria; graded exercise '
+           b'produced modest improvement in fatigue scores.</p>'
+           b'<p>The Cytokine Study compared 1,200 patients meeting the Canadian Consensus Criteria with controls '
+           b'and found altered cytokine profiles early in illness.</p>'
+           b'<p>A published reanalysis of the Graded Trial found that recovery rates fell sharply under the '
+           b'original protocol.</p>'
+           b'<p>In 2007 the Institute recommended graded exercise for all patients.</p></body></html>')
+
+
+def matrix_ws(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('What causes the illness?')
+    sid = w.ingest('https://review.example/a', STUDIES, 200)['id']
+    p = {k: w.cut(sid, a, before=0, after=150)['passage'] for k, a in (
+        ('decon', 'Some authors propose'), ('immune', 'Others propose'), ('trial', 'The Graded Trial randomised'),
+        ('cyto', 'The Cytokine Study'), ('critique', 'A published reanalysis'), ('inst', 'In 2007 the Institute'))}
+    return w, p
+
+
+def matrix(p):
+    return {'explanations': [
+        {'id': 'H1', 'claim': 'deconditioning and fear of activity maintain it',
+         'proposed_in': {'passage': p['decon'], 'words': 'maintained by deconditioning and fear of activity'}},
+        {'id': 'H2', 'claim': 'post-infectious immune dysregulation',
+         'proposed_in': {'passage': p['immune'], 'words': 'an infection triggers lasting immune dysregulation'}}],
+        'evidence': [
+        {'id': 'graded-trial', 'passage': p['trial'], 'words': 'The Graded Trial randomised 641 patients',
+         'design': 'rct', 'n': 641, 'case_definition': 'Oxford criteria',
+         'status': [{'status': 'disputed', 'passage': p['critique'], 'note': 'reanalysis',
+                     'words': 'recovery rates fell sharply under the original protocol'}],
+         'positions': [{'institution': 'the Institute', 'date': '2007', 'on': 'H1', 'passage': p['inst'],
+                        'words': 'the Institute recommended graded exercise'}],
+         'cells': {'H1': {'reading': 'consistent', 'words': 'graded exercise produced modest improvement'},
+                   'H2': {'reading': 'neutral'}}},
+        {'id': 'cytokine-study', 'passage': p['cyto'], 'words': 'compared 1,200 patients meeting',
+         'design': 'case_control', 'n': 1200, 'case_definition': 'Canadian Consensus Criteria',
+         'cells': {'H1': {'reading': 'inconsistent', 'words': 'found altered cytokine profiles early in illness'},
+                   'H2': {'reading': 'consistent', 'words': 'found altered cytokine profiles early in illness'}}}]}
+
+
+def test_matrix_ranks_by_inconsistency_and_flags_positions_on_disputed_rows(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    out = w.matrix(matrix(p))
+    assert out['refused'] == [] and out['stored']['evidence'] == ['graded-trial', 'cytokine-study']
+    m = w.matrix_show()
+    assert [e['id'] for e in m['explanations']] == ['H2', 'H1']
+    assert m['explanations'][1]['inconsistent'] == ['cytokine-study']
+    assert m['diagnostic'] == ['graded-trial', 'cytokine-study'] and m['non_diagnostic'] == []
+    assert set(m['resting_on_one_row']) == {'H1', 'H2'}
+    flag = m['positions_on_disputed_or_weak_rows'][0]
+    assert flag['institution'] == 'the Institute' and flag['row'] == 'graded-trial' and 'disputed' in flag['why']
+    assert m['grid'][1].split()[:3] == ['graded-trial', 'C', 'N']
+
+
+def test_matrix_refuses_defects_part_by_part_and_says_what_to_do(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    bad = matrix(p)
+    bad['explanations'].append({'id': 'H3', 'claim': 'it is all in the mind',
+                                'proposed_in': {'passage': p['decon'], 'words': 'it is all in the mind'}})
+    bad['explanations'].append({'id': 'H1a', 'claim': 'sub', 'parent': 'H9',
+                                'proposed_in': {'passage': p['decon'], 'words': 'fear of activity'}})
+    bad['evidence'][0]['n'] = 700
+    bad['evidence'][1]['cells']['H1']['words'] = 'cytokines prove it'
+    bad['evidence'][1]['cells']['H3'] = {'reading': 'inconsistent', 'words': 'found altered cytokine profiles'}
+    bad['evidence'][1]['positions'] = [{'institution': 'X', 'date': '2007-13', 'passage': p['inst'],
+                                        'words': 'the Institute recommended graded exercise'}]
+    bad['evidence'].append({'id': 'anecdote', 'passage': p['trial'], 'words': 'graded exercise produced modest',
+                            'design': 'blog post', 'n': None, 'case_definition': None})
+    out = w.matrix(bad)
+    why = {(r.get('explanation') or r.get('row'), r.get('cell') or r.get('part')): r['why'] for r in out['refused']}
+    assert 'not in' in why[('H3', None)] and 'parent H9' in why[('H1a', None)]
+    assert 'n=700' in why[('graded-trial', None)] and 'design must be one of' in why[('anecdote', None)]
+    assert 'not in' in why[('cytokine-study', 'H1')] and 'H3' in why[('cytokine-study', 'H3')]
+    assert 'date' in why[('cytokine-study', 'position')]
+    assert out['stored'] == {'explanations': ['H1', 'H2'], 'evidence': ['cytokine-study']}
+    m = w.matrix_show()
+    assert all(e['inconsistent'] == [] for e in m['explanations']) and m['resting_on_no_row'] == ['H1']
+
+
+def test_an_edited_matrix_file_is_revalidated_on_use(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    w.matrix(matrix(p))
+    stored = json.loads((w.root / 'matrix.json').read_text())
+    stored['evidence'][1]['cells']['H1'] = {'reading': 'consistent', 'passage': p['cyto'], 'words': 'forged support'}
+    stored['evidence'][0]['status'] = []
+    (w.root / 'matrix.json').write_text(json.dumps(stored))
+    m = w.matrix_show()
+    assert m['dropped_on_use'][0]['cell'] == 'H1' and m['explanations'][1]['inconsistent'] == []
+    assert m['positions_on_disputed_or_weak_rows'] == []
+    w.evidence_status('graded-trial', 'disputed', p['critique'], 'recovery rates fell sharply', note='reanalysis')
+    assert 'disputed' in w.matrix_show()['positions_on_disputed_or_weak_rows'][0]['why']
+
+
+def test_a_matrix_row_close_to_a_rests_id_must_use_it(ws):
+    w, sid, pid = ws
+    uid = w.add([atom(sid, pid)])['added'][0]['uid']
+    w.rests([uid], 'registry-study-2024', 'Example Holding A/S (CVR 00000001) sold', note='the filing')
+    out = w.matrix({'explanations': [], 'evidence': [
+        {'id': 'registry-study-2025', 'passage': pid, 'words': 'Example Holding A/S (CVR 00000001) sold',
+         'design': 'cross_sectional', 'n': None, 'case_definition': None}]})
+    assert 'registry-study-2024' in out['refused'][0]['why'] and out['stored']['evidence'] == []
