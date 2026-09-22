@@ -27,17 +27,34 @@ class Classifier(Protocol):
     def classify(self, premise: str, hypothesis: str) -> dict[str, float]: ...
 
 
+VERB_PHRASE = {'denies': 'denied that', 'says': 'said that', 'writes': 'wrote that', 'argues': 'argued that',
+               'estimates': 'estimated that', 'claims': 'claimed that', 'reports': 'reported that'}
+
+
 def hypothesis(atom: Atom) -> str:
-    """The claim as the quote should state it: without the time we bound."""
-    text = TIME_PHRASE.sub('', atom.chain()[1].statement).strip(' ,.')
-    return (text[:1].upper() + text[1:] + '.') if text else ''
+    """The claim as the quote should state it: without the time we bound, and
+    with the inner report chain, so "X denied p" is tested as a denial."""
+    reports, claim = atom.chain()
+    text = TIME_PHRASE.sub('', claim.statement).strip(' ,.')
+    if not text:
+        return ''
+    for r in reversed(reports[1:]):
+        text = f'{r.speaker.label} {VERB_PHRASE.get(r.verb, r.verb)} {text}'
+    return text[:1].upper() + text[1:] + '.'
 
 
 def check_support(atom: Atom, classifier: Classifier) -> dict:
-    probabilities = classifier.classify(atom.quote, hypothesis(atom))
+    """The flag is a neutral `support_review`, whatever the classifier's label:
+    the LLM is told to look again, not which way the classifier leaned. When
+    the classifier cannot run (the pair is too long), the flag is
+    `support_not_run`, so a skipped check is visible rather than silent."""
+    try:
+        probabilities = classifier.classify(atom.quote, hypothesis(atom))
+    except ValueError:
+        return {'label': None, 'entailment': None, 'flag': 'support_not_run'}
     label = max(probabilities, key=probabilities.get)
     return {'label': label, 'entailment': probabilities['entailment'],
-            'flag': None if label == 'entailment' else f'quote_{label}'}
+            'flag': None if label == 'entailment' else 'support_review'}
 
 
 def review_request(atom: Atom, support: dict) -> dict | None:

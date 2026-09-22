@@ -4,6 +4,7 @@ from gleipnir.atomiser import ATOMISER, Atom, Passage, check
 
 P = Passage(id='p', source_id='fixture:gazette', source_date='2025-03-01',
             text='Example Holding A/S (CVR 00000001) did not sell its stake in 2024, the chief executive said.')
+Q = 'Example Holding A/S (CVR 00000001) did not sell its stake in 2024, the chief executive said'
 
 CLAIM = dict(subject={'id': 'cvr:00000001', 'label': 'Example Holding A/S'},
              predicate='owns', value='its stake',
@@ -18,7 +19,7 @@ def atom(claim=None, inner_verb='says', outer=None, quote=None, **claim_changes)
                        'content': {'speaker': {'id': None, 'label': 'the chief executive'},
                                    'verb': inner_verb, 'content': content}}
     return Atom.model_validate({'passage_id': 'p', 'report': report,
-                                'quote': quote or 'did not sell its stake in 2024, the chief executive said'})
+                                'quote': quote or Q})
 
 
 def test_correct_atom_is_closed_at_both_levels():
@@ -33,7 +34,6 @@ def test_correct_atom_is_closed_at_both_levels():
     (dict(statement='Example Holding A/S currently has not sold its stake.'), 'indexical_in_statement'),
     (dict(holds={'start': '2019', 'end': '2019', 'basis': 'stated'}), 'time_not_in_source'),
     (dict(holds={'end': '2024-01-01', 'basis': 'asserted'}), 'asserted_time_not_source_date'),
-    (dict(polarity='affirmed', statement='Example Holding A/S sold its stake in 2024.'), 'negation_dropped'),
 ])
 def test_claim_defects(kw, defect):
     assert defect in check(atom(**kw), P)['defects']
@@ -118,3 +118,8 @@ def test_version_numbers_in_local_ids_and_the_source_as_subject():
     assert _id_defects('local:web:arxiv.org/8122d58e62#llama-3.1-70b-instruct', p, p.text.casefold()) == []
     assert _id_defects('web:arxiv.org/8122d58e62', p, p.text.casefold()) == []
     assert _id_defects('web:arxiv.org/0000000000', p, p.text.casefold()) == ['not_rigid']
+
+
+def test_meaning_checks_are_review_items_not_refusals():
+    v = check(atom(polarity='affirmed', statement='Example Holding A/S sold its stake in 2024.'), P)
+    assert 'polarity_review' in v['review'] and not v['defects'] and not v['closed']

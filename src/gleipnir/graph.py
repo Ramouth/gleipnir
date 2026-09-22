@@ -92,8 +92,8 @@ class Graph:
         self._node(cid, 'claim', claim.statement, verdict['claim'].get('scope', 'global'), {
             'predicate': claim.predicate, 'value': claim.value, 'polarity': claim.polarity,
             'hedge': claim.hedge, 'modality': claim.modality, 'holds': claim.holds.model_dump(),
-            'closed': verdict['claim']['closed'], 'open': verdict['claim']['open'],
-            'source': passage.source_id})
+            'closed': verdict['claim']['closed'], 'open': verdict.get('open', verdict['claim']['open']),
+            'source': passage.source_id, 'status': verdict.get('status')})
         self._edge(parent, cid, 'content', uid)
         subject = self._entity(claim.subject.id, claim.subject.label, passage.source_id)
         self._edge(cid, subject, 'subject', uid)
@@ -166,6 +166,21 @@ class Graph:
                 key = c['id']
             groups[key].append(c)
         return dict(groups)
+
+    def speakers(self, claim_id: str) -> list[str]:
+        """The report chain above a claim, outermost first, as speaker labels."""
+        chain, node = [], claim_id
+        while True:
+            row = self.db.execute("SELECT src FROM edges WHERE dst=? AND kind='content'", (node,)).fetchone()
+            if not row:
+                break
+            node = row[0]
+            label = self.db.execute(
+                "SELECT n.label, r.label FROM edges e JOIN nodes n ON n.id=e.dst JOIN nodes r ON r.id=e.src "
+                "WHERE e.src=? AND e.kind='by'", (node,)).fetchone()
+            if label:
+                chain.append(f'{label[0]} ({label[1]})')
+        return list(reversed(chain))
 
     def neighbours(self, entity: str) -> list[tuple[str, str, str]]:
         return self.db.execute(

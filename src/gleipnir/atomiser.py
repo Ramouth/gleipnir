@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from gleipnir.claims import Predicate
 
@@ -23,7 +23,7 @@ PARTIAL_DATE = r'^\d{4}(-\d{2}(-\d{2})?)?$'
 #: Identifier schemes that name the same thing at every position. A name is
 #: never rigid; `fixture:` exists only for labelled test material.
 RIGID = re.compile(
-    r'^(cvr:\d{8}|lei:[A-Z0-9]{20}|doi:10\.\S+|arxiv:\d{4}\.\d{4,5}(v\d+)?'
+    r'^(cvr:\d{8}|lei:[A-Z0-9]{20}|doi:10\.\d{4,9}/\S+|arxiv:\d{4}\.\d{4,5}(v\d+)?'
     r'|model:[a-z0-9][a-z0-9._-]*-\d[\w.-]*|fixture:[A-Za-z0-9_-]+)$')
 
 #: Relations a claim may use, so the same relation gets the same word in every
@@ -74,6 +74,13 @@ INDEXICALS = re.compile(
     r'this (year|month|week|quarter)|last (year|month|week|quarter)|'
     r'next (year|month|week|quarter)|ago|so far|to date|still)\b')
 
+#: The same words capitalised at the start of a sentence ("Currently, ...").
+#: Anywhere else a capital marks a name ("Example Now Media A/S").
+_SENTENCE_START = r'(?:^|[.!?:;]\s+|\()'
+INDEXICALS_START = re.compile(
+    _SENTENCE_START + r'(Currently|Now|Today|Tonight|Yesterday|Tomorrow|Recently|Lately|Nowadays|'
+    r'Presently|At present|These days|So far|To date|Still)\b')
+
 #: Reporting verbs. "claims" as a noun is common in research text, so the
 #: verb forms need a following "that" or a speaker-like frame.
 REPORTING = re.compile(
@@ -87,6 +94,24 @@ NEGATION = re.compile(
 HEDGE = re.compile(
     r'\b(may|might|could|possibly|probably|likely|approximately|roughly|reputedly|'
     r'estimated?|appears?|seems?|suggests?|about \d|around \d)')
+#: Capitalised hedges at a sentence start; "May" is left out (the month).
+HEDGE_START = re.compile(
+    _SENTENCE_START + r'(Might|Could|Possibly|Probably|Likely|Approximately|Roughly|Reputedly|'
+    r'Reportedly|Apparently|Allegedly|Perhaps|Maybe)\b')
+
+
+def _has(pattern, start_pattern, text: str) -> bool:
+    return bool(pattern.search(text) or start_pattern.search(text))
+
+
+#: Month names in the languages sources have come in so far, for checking that
+#: a month written into an atom appears in its passage.
+MONTHS = {
+    1: 'january januar janvier janeiro jan', 2: 'february februar février fevrier feb',
+    3: 'march marts märz marz mars mar', 4: 'april avril apr', 5: 'may maj mai',
+    6: 'june juni juin jun', 7: 'july juli juillet jul', 8: 'august aug août aout',
+    9: 'september septembre sep sept', 10: 'october oktober octobre okt oct',
+    11: 'november novembre nov', 12: 'december dezember décembre decembre dec dez'}
 
 OpenReason = Literal['subject', 'relation', 'time', 'attribution', 'future',
                      'conditional', 'ambiguous', 'not_factual']
@@ -103,15 +128,33 @@ class Passage(Model):
     source_date: str | None = Field(default=None, pattern=PARTIAL_DATE)
     text: str = Field(min_length=1)
 
+    @field_validator('source_date')
+    @classmethod
+    def real_date(cls, value):
+        return _calendar(value)
+
 
 class Subject(Model):
     id: str | None = None          # rigid identifier, or None if unresolved
     label: str = Field(min_length=1)
 
 
+def _calendar(value: str | None) -> str | None:
+    if value and len(value) > 4:
+        from datetime import date
+        y, m, *d = (int(x) for x in value.split('-'))
+        date(y, m, d[0] if d else 1)          # raises ValueError on 2026-13-45
+    return value
+
+
 class Holds(Model):
     start: str | None = Field(default=None, pattern=PARTIAL_DATE)
     end: str | None = Field(default=None, pattern=PARTIAL_DATE)
+
+    @field_validator('start', 'end')
+    @classmethod
+    def real_date(cls, value):
+        return _calendar(value)
     #: stated: the passage gives the time. asserted: bounded only by source_date.
     #: open: no time can be bound.
     basis: Literal['stated', 'asserted', 'open']
@@ -183,7 +226,10 @@ def _allowed_years(passage: Passage) -> set[str]:
     """Years an atom may state: written in the passage, the source's own year,
     the year before it when the passage says "last year", and every year of a
     decade the passage names ("the 2000s")."""
-    years = set(re.findall(r'\b(1\d\d\d|20\d\d)\b', passage.text)) | _years(passage.source_date)
+    # A year glued to more digits ("2031 4455", "+45 2031") is a phone or id number;
+    # "Q3 2024" and "H1 2024" are dates.
+    years = set(re.findall(r'(?<![\d+]\s)(?<![\d+])\b(1\d\d\d|20\d\d)\b(?!\s?\d)', passage.text)) \
+        | set(re.findall(r'\b[QH][1-4]\s?(1\d\d\d|20\d\d)\b', passage.text)) | _years(passage.source_date)
     if passage.source_date and RELATIVE_YEAR.search(passage.text):
         years.add(str(int(passage.source_date[:4]) - 1))
     for decade in re.findall(r'\b(1[89]\d|20\d)0s\b', passage.text):
@@ -225,16 +271,32 @@ def check(atom: Atom, passage: Passage) -> dict:
             continue
         if r.speaker.id and _id_defects(r.speaker.id, passage, text):
             r_def.append('speaker_id_not_in_passage')
-        elif not r.speaker.id and not _named(r.speaker.label, text):
+        elif not r.speaker.id and not _phrase_in(r.speaker.label, text):
             r_def.append('speaker_not_in_passage')
     if REPORTING.search(atom.quote) and len(reports) == 1 and reports[0].verb == 'asserts':
         r_def.append('attribution_dropped')
+    # What stands just before the quote in its sentence can reverse or reframe
+    # it ("It is false that", "Critics claim that"). Code cannot judge meaning,
+    # so this is a review item, not a defect.
+    s_open = set()
+    before, after = _sentence_around(atom.quote, passage.text)
+    around = f'{before} {after}'
+    represented = len(reports) > 1 or reports[0].verb != 'asserts'
+    if around.strip() and (FRAME.search(around) or NEGATION.search(around) or _has(HEDGE, HEDGE_START, around)
+                           or (REPORTING.search(around) and not represented)):
+        # Skip only what the atom already carries: a nested speaker for a
+        # reporting frame is handled above; a negation needs negated polarity.
+        if not (represented and not FRAME.search(around) and not NEGATION.search(around)
+                and not _has(HEDGE, HEDGE_START, around)):
+            s_open.add('frame_outside_quote')
 
     c_def, c_open = [], set(claim.open_reasons)
     if claim.subject.id is None:
         c_open.add('subject')
     else:
         c_def += [f'subject_{d}' for d in _id_defects(claim.subject.id, passage, text)]
+        if _global_value(claim.subject.id) and not _id_in(claim.subject.id, _ws(atom.quote)):
+            s_open.add('subject_id_outside_quote')    # the passage may name it for another party
     if claim.predicate is None or (claim.object is None and claim.value is None):
         c_open.add('relation')
     elif claim.predicate.startswith('other_'):
@@ -246,8 +308,17 @@ def check(atom: Atom, passage: Passage) -> dict:
             c_open.add('relation')
         else:
             c_def += [f'object_{d}' for d in _id_defects(claim.object.id, passage, text)]
-    if INDEXICALS.search(claim.statement):
+    names = ' '.join(x.label for x in (claim.subject, claim.object) if x is not None)
+    stripped = claim.statement
+    for label in (x.label for x in (claim.subject, claim.object) if x is not None):
+        stripped = stripped.replace(label, ' ')
+    if _has(INDEXICALS, INDEXICALS_START, stripped.strip()):
         c_def.append('indexical_in_statement')
+    # The quote should name what the atom is about; otherwise the atom rests on
+    # context outside its quote (a pronoun, a table header, an earlier sentence).
+    for part, entity in (('subject', claim.subject), ('object', claim.object)):
+        if entity is not None and not _named(entity.label, _ws(atom.quote)):
+            s_open.add(f'{part}_outside_quote')
     h = claim.holds
     if h.basis == 'open':
         c_open.add('time')
@@ -259,6 +330,8 @@ def check(atom: Atom, passage: Passage) -> dict:
             c_def.append('stated_time_empty')
         if not (_years(h.start) | _years(h.end)) <= _allowed_years(passage):
             c_def.append('time_not_in_source')
+        elif any(not _month_in(v, passage) for v in (h.start, h.end) if v and len(v) > 4):
+            c_def.append('month_not_in_source')
         if h.start and h.end and h.end[:len(h.start)] < h.start[:len(h.end)]:
             c_def.append('time_reversed')
     if claim.modality == 'forecast':
@@ -266,27 +339,36 @@ def check(atom: Atom, passage: Passage) -> dict:
     if claim.modality == 'conditional':
         c_open.add('conditional')
     negated = claim.polarity == 'negated' or any(r.verb == 'denies' for r in reports)
-    if NEGATION.search(atom.quote) and not negated and not NEGATION.search(claim.statement):
-        c_def.append('negation_dropped')
-    if HEDGE.search(atom.quote) and not claim.hedge and not HEDGE.search(claim.statement) \
+    if NEGATION.search(atom.quote) and not negated:
+        # Keyed on polarity: a "not" elsewhere in the statement no longer
+        # silences it. With no negation word at all it is a defect; otherwise
+        # the negation may belong to another clause, so it is reviewed.
+        # A negation may belong to another clause ("which has never paid a
+        # dividend", "company no 1111"): code cannot tell, so it is reviewed.
+        s_open.add('polarity_review')
+    if _has(HEDGE, HEDGE_START, atom.quote) and not claim.hedge \
+            and not _has(HEDGE, HEDGE_START, claim.statement) \
             and not any(r.verb == 'estimates' for r in reports):
-        c_def.append('hedge_dropped')
+        s_open.add('hedge_review')
 
     def verdict(d, o):
         return {'closed': not d and not o, 'defects': d, 'open': sorted(o)}
     report_v = verdict(r_def, r_open)
     claim_v = verdict(c_def, c_open)
     ids = [x.id for x in (claim.subject, claim.object) if x is not None and x.id]
-    claim_v['scope'] = 'local' if any(LOCAL.match(i) for i in ids) else 'global'
+    claim_v['scope'] = 'local' if any(LOCAL.match(i) or i == passage.source_id for i in ids) else 'global'
     # The atom as a whole: a closed report of an open claim is still useful,
     # but only a closed report of a closed claim may become global.
     # `closed` means globally closed: only that may be promoted. A claim bound
     # with local ids is closed inside its source only (`closed_local`).
-    both = report_v['closed'] and claim_v['closed']
+    # `review` items are for the support step: things code cannot settle about
+    # meaning. They keep an atom from closing until someone has looked.
+    both = report_v['closed'] and claim_v['closed'] and not s_open
     return {'report': report_v, 'claim': claim_v, 'scope': claim_v['scope'],
+            'review': sorted(s_open),
             'closed': both and claim_v['scope'] == 'global',
             'closed_local': both and claim_v['scope'] == 'local',
-            'defects': r_def + c_def, 'open': sorted(r_open | c_open)}
+            'defects': r_def + c_def, 'open': sorted(r_open | c_open | s_open)}
 
 
 #: The steps an atom passes through, in order. Each defect and each open
@@ -307,7 +389,11 @@ _STEP_OF = {
     'future': 'time', 'conditional': 'statement', 'ambiguous': 'statement', 'not_factual': 'statement',
     'indexical_in_statement': 'statement', 'negation_dropped': 'statement', 'hedge_dropped': 'statement',
     # support.py: a small classifier's flag, always open (review), never a defect.
-    'quote_neutral': 'support', 'quote_contradiction': 'support',
+    'support_review': 'support', 'support_not_run': 'support',
+    'frame_outside_quote': 'support', 'subject_outside_quote': 'support',
+    'object_outside_quote': 'support', 'polarity_review': 'support', 'hedge_review': 'support',
+    'subject_id_outside_quote': 'support',
+    'month_not_in_source': 'time',
 }
 
 
@@ -329,31 +415,106 @@ def trace(verdict: dict, support: dict | None = None) -> dict:
 
 
 def _id_defects(ident: str, passage: Passage, text: str) -> list[str]:
-    """Why an identifier cannot be used here: [] when it can."""
+    """Why an identifier cannot be used here: [] when it can.
+
+    Matches are on token boundaries: cvr:00009999 is not found inside the
+    phone number 0000999912, and a DOI needs its registrant and suffix.
+    """
     local = LOCAL.match(ident)
     if local:
         if local['source'] != passage.source_id:
             return ['local_id_wrong_source']
-        words = re.sub(r'[^0-9a-z]+', ' ', text)
-        squashed = words.replace(' ', '')
-        tokens = re.split(r'[.-]', local['slug'])
-        if not all(t in words for t in tokens) and re.sub(r'[.-]', '', local['slug']) not in squashed:
+        words = re.sub(r'[^0-9a-z]+', ' ', text).split()
+        tokens = [t for t in re.split(r'[.-]', local['slug']) if t]
+        joined = ' '.join(words)
+        if not all(t in words for t in tokens) and ' '.join(tokens) not in joined \
+                and re.sub(r'[.-]', '', local['slug']) not in words:
             return ['local_id_not_in_passage']
         return []
     if ident == passage.source_id:
-        return []                  # the source itself, e.g. a paper stating its own method
+        return []                  # the source itself: local scope, see check()
     if not RIGID.match(ident):
         return ['not_rigid']
-    if ident != passage.source_id and ident.split(':', 1)[1].casefold() not in text:
+    if ident.startswith('fixture:') and not passage.source_id.startswith('fixture:'):
+        return ['not_rigid']       # fixture ids exist only for labelled test material
+    value = ident.split(':', 1)[1].casefold()
+    if not re.search(r'(?<![0-9a-z])' + re.escape(value) + r'(?![0-9a-z])', text):
         return ['id_not_in_passage']
     return []
 
 
+def _sentence_around(quote: str, passage_text: str) -> tuple[str, str]:
+    """The words of the quote's own sentence before and after it. Sentences
+    end at . ! ? followed by a capital, so "U.S." does not end one early."""
+    text, q = _ws(passage_text), _ws(quote)
+    at = text.find(q)
+    if at < 0:
+        return '', ''
+    ends = [m.end() for m in re.finditer(r'[.!?]\s+(?=[a-zæøåäöü0-9"“(])', text)]
+    start = max([e for e in ends if e <= at] or [0])
+    stop = min([e for e in ends if e >= at + len(q)] or [len(text)])
+    return text[start:at], text[at + len(q):stop]
+
+
+def _global_value(ident: str) -> str | None:
+    return None if LOCAL.match(ident) or ':' not in ident or ident.startswith('web:') else ident.split(':', 1)[1]
+
+
+def _id_in(ident: str, text: str) -> bool:
+    value = _global_value(ident)
+    return bool(value) and bool(re.search(r'(?<![0-9a-z])' + re.escape(value.casefold()) + r'(?![0-9a-z])', text))
+
+
+def _lead_in(quote: str, passage_text: str) -> str:
+    return _sentence_around(quote, passage_text)[0]
+
+
+FRAME = re.compile(r'\b(myth|rumou?r|false|untrue|contradict\w*|disput\w*|denie[sd]|deny|refute\w*|'
+                   r'wrong|incorrect|unverified|could not (be )?verif\w*|otherwise|if|should|whether|'
+                   r'is it|critics?|opponents?|claims? that|alleged\w*)\b')
+
+
+def _month_in(value: str, passage: Passage) -> bool:
+    """A month written into an atom must appear in the passage (as a name in a
+    known language or as a number next to the year), or come from the source date."""
+    month = int(value[5:7])
+    if passage.source_date and passage.source_date[:7] == value[:7]:
+        return True
+    text = passage.text.casefold()
+    quarter = (month - 1) // 3 + 1
+    if re.search(rf'\bq{quarter}\s?{value[:4]}\b', text):
+        return True                           # "Q3 2024" resolved to 2024-07..09
+    # A month name counts only next to a year or a day number, so "the deal
+    # may be reviewed" does not date anything to May.
+    for n in MONTHS[month].split():
+        if re.search(rf'(\b\d{{1,2}}\.?\s+{re.escape(n)}\b|\b{re.escape(n)}\.?\s+(\d{{1,2}}\b|{value[:4]}))', text):
+            if len(value) == 10 and not re.search(rf'\b0?{int(value[8:])}\.?\s+{re.escape(n)}|{re.escape(n)}\.?\s+0?{int(value[8:])}\b', text):
+                continue                      # a stated day must appear too
+            return True
+    if value[:7] in text:
+        return True
+    return bool(re.search(rf'(?<!\d)0?{month}[./-]{value[:4]}|{value[:4]}[./-]0?{month}(?!\d)|'
+                          rf'\d{{1,2}}[./]0?{month}[./]', text))
+
+
+def _phrase_in(label: str, text: str) -> bool:
+    """An unresolved speaker must be named as a phrase: its content words in
+    order, or all of them near each other, not one shared word."""
+    words = [w for w in re.findall(r'[\w-]{3,}', label.casefold())
+             if w not in {'the', 'that', 'this', 'from', 'with', 'their', 'and', 'for', 'its'}]
+    if not words:
+        return False
+    if len(words) == 1:
+        return _named(label, text)
+    return all(re.search(r'(?<!\w)' + re.escape(w) + r'(?!\w)', text) for w in words) and \
+        bool(re.search(r'\W+(?:\w+\W+){0,3}'.join(re.escape(w) for w in words[:3]), text))
+
+
 def _named(label: str, text: str) -> bool:
     """Some content word of an unresolved speaker's label appears in the passage."""
-    words = [w for w in re.findall(r'[\w-]{4,}', label.casefold())
-             if w not in {'the', 'that', 'this', 'from', 'with', 'their'}]
-    return any(w in text for w in words)
+    words = [w for w in re.findall(r'[\w-]{3,}', label.casefold())
+             if w not in {'the', 'that', 'this', 'from', 'with', 'their', 'and', 'for', 'its'}]
+    return any(re.search(r'(?<!\w)' + re.escape(w) + r'(?!\w)', text) for w in words)
 
 
 PROMPT = f"""\
