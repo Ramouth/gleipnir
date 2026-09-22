@@ -89,13 +89,16 @@ WALL = re.compile(r'just a moment|captcha|enable javascript|turn on javascript|r
                   r'unusual traffic|"hitcount"\s*:\s*0\b', re.I)
 ELSEWHERE = ("try the publisher's other host, Europe PMC (europepmc.org; full text as XML at "
              'https://www.ebi.ac.uk/europepmc/webservices/rest/PMC.../fullTextXML), the DOI '
-             '(https://doi.org/...), or an archived copy (https://web.archive.org/web/URL)')
+             '(https://doi.org/...), or an archived copy (https://web.archive.org/web/URL; for the raw file '
+             'without the archive frame, https://web.archive.org/web/2024id_/URL)')
 #: Hosts that hold documents from many publishers. Each document there is its
 #: own outlet: two papers found through one index are not one origin.
 REPOSITORIES = ('europepmc.org', 'ebi.ac.uk', 'ncbi.nlm.nih.gov', 'doi.org', 'arxiv.org', 'archive.org',
                 'biorxiv.org', 'medrxiv.org', 'ssrn.com', 'zenodo.org', 'osf.io', 'semanticscholar.org',
                 'researchgate.net', 'core.ac.uk', 'hal.science', 'jstor.org', 'scholar.archive.org',
-                'documentcloud.org', 'archives.gov', 'govinfo.gov', 'scribd.com')
+                'documentcloud.org', 'archives.gov', 'govinfo.gov', 'scribd.com',
+                # working-paper series: one host, many independent authors
+                'nber.org', 'repec.org', 'iza.org', 'cepr.org', 'papers.ssrn.com', 'econstor.eu')
 RELAY_ACTS = ('verifies', 'qualifies', 'disputes', 'distorts')
 EVIDENCE_STATUS = {'retracted': 'withdrawn by its authors or publisher',
                    'corrected': 'an erratum or correction changed it',
@@ -134,11 +137,16 @@ DESIGNS = {
     'experiment': 'a controlled experiment outside medicine (a detector run, a lab test of a law)',
     'simulation': 'a computational model run',
     'observation': 'one object or event observed (a single cluster, a single case)',
+    'quasi_experiment': 'a natural experiment or difference-in-differences: a policy change compared with '
+                        'a comparison group (border counties, synthetic controls, event studies)',
+    'time_series': 'one population followed through time without a comparison group',
+    'model_estimate': 'a projection from a model with stated assumptions (a budget office estimate)',
 }
 WEAK_DESIGNS = ('case_series', 'case_report', 'expert_opinion', 'testimony')
 UNCOUNTED = ('official_finding', 'forensic', 'document', 'testimony', 'simulation', 'observation')
 #: Designs with a sample but no case definition (a survey counts objects, it does not diagnose them).
-NO_DEFINITION = UNCOUNTED + ('measurement', 'experiment', 'mechanistic', 'animal')
+NO_DEFINITION = UNCOUNTED + ('measurement', 'experiment', 'mechanistic', 'animal', 'quasi_experiment',
+                             'time_series', 'model_estimate')
 ACCOUNTABILITY = {
     'peer_reviewed': 'a journal or preprint server with review',
     'edited': 'a newsroom or publisher with editors and a corrections practice',

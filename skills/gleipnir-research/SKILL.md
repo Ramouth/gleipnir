@@ -51,7 +51,9 @@ you fetch anything, write a frame and show it to the user:
 - Mark a question `"rivals": false` when its answers can all be true together (several
   candidates may each supply part of the whole): each is then read on its own evidence.
 - Designs outside medicine: `measurement` (a survey, an instrument record), `experiment`
-  (a detector run, a lab test), `simulation`, `observation` (one object or event). They
+  (a detector run, a lab test), `simulation`, `observation` (one object or event),
+  `quasi_experiment` (a policy change against a comparison group), `time_series`,
+  `model_estimate` (a projection with stated assumptions). They
   are not asked for a case definition.
 - A null result that excludes only part of what an explanation allows (a search that
   covers part of a range) `narrows` it; it is not `inconsistent`. A narrowing cell may name

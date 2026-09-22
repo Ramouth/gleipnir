@@ -933,3 +933,13 @@ def test_a_prediction_made_after_the_evidence_is_a_fit_not_a_confirmation(tmp_pa
         assert w.matrix(m)['refused'] == []
         h2 = next(e for e in w.matrix_show()['questions'][0]['explanations'] if e['id'] == 'H2')
         assert bool(h2['confirmed_discriminating']) is confirmed and bool(h2.get('accommodated')) is not confirmed
+
+
+def test_papers_in_one_working_paper_series_are_not_one_outlet(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    for n in range(2):
+        sid = w.ingest(f'https://www.nber.org/papers/w2{n}', PAGE.replace(b'</body>', f'<p>{n}</p></body>'.encode()),
+                       200)['id']
+        w.origin(sid, f'author-team-{n}', basis='different authors, different data', declared_by='test')
+    assert w.status()['origin_warnings'] == []
