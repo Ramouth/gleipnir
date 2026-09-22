@@ -93,7 +93,8 @@ def test_links_join_islands_only_with_a_basis(tmp_path):
     w.init('q')
     ids = []
     for url, name in (('https://a.example.org/x', b'Sozialdemokraten'), ('https://b.example.org/y', b'Social Democrats')):
-        page = b'<html><body><p>' + name + b' won 38 seats in 2026.</p></body></html>'
+        page = (b'<html><body><p>' + name + b' won 38 seats in 2026.</p>'
+                b'<p>Turnout was reported by the election authority after the count closed.</p></body></html>')
         sid = w.ingest(url, page, 200)['id']
         pid = w.cut(sid, name.decode(), before=0, after=40)['passage']
         slug = name.decode().lower().replace(' ', '-')
@@ -236,7 +237,7 @@ def test_an_atom_can_rest_on_two_studies_and_a_declaration_can_be_taken_back(ws)
 
 STUDIES = (b'<html><body><p>Some authors propose that fatigue is maintained by deconditioning and fear of activity.</p>'
            b'<p>Others propose that an infection triggers lasting immune dysregulation in patients.</p>'
-           b'<p>The Graded Trial randomised 641 patients meeting the Oxford criteria; graded exercise '
+           b'<p>The Graded Trial randomised 641 patients in 2011 meeting the Oxford criteria; graded exercise '
            b'produced modest improvement in fatigue scores.</p>'
            b'<p>The Cytokine Study compared 1,200 patients meeting the Canadian Consensus Criteria with controls '
            b'and found altered cytokine profiles early in illness.</p>'
@@ -266,7 +267,8 @@ def matrix(p):
          'design': 'rct', 'n': 641, 'case_definition': 'Oxford criteria',
          'status': [{'status': 'disputed', 'passage': p['critique'], 'note': 'reanalysis',
                      'words': 'recovery rates fell sharply under the original protocol'}],
-         'positions': [{'institution': 'the Institute', 'date': '2007', 'on': 'H1', 'passage': p['inst'],
+         'positions': [{'institution': 'the Institute', 'date': '2007', 'stance': 'endorses', 'on': 'H1',
+                        'passage': p['inst'],
                         'words': 'the Institute recommended graded exercise'}],
          'cells': {'H1': {'reading': 'consistent', 'words': 'graded exercise produced modest improvement'},
                    'H2': {'reading': 'neutral'}}},
@@ -281,12 +283,16 @@ def test_matrix_ranks_by_inconsistency_and_flags_positions_on_disputed_rows(tmp_
     out = w.matrix(matrix(p))
     assert out['refused'] == [] and out['stored']['evidence'] == ['graded-trial', 'cytokine-study']
     m = w.matrix_show()
-    assert [e['id'] for e in m['explanations']] == ['H2', 'H1']
-    assert m['explanations'][1]['inconsistent'] == ['cytokine-study']
-    assert m['diagnostic'] == ['graded-trial', 'cytokine-study'] and m['non_diagnostic'] == []
-    assert set(m['resting_on_one_row']) == {'H1', 'H2'}
+    q = m['questions'][0]                       # no questions given: one implicit question, as before
+    assert q['id'] == 'Q' and q['text'] == 'What causes the illness?'
+    assert [e['id'] for e in q['explanations']] == ['H2', 'H1']
+    assert q['explanations'][1]['inconsistent'] == ['cytokine-study']
+    assert q['discriminates'] == [{'row': 'cytokine-study', 'readings': {'H1': 'inconsistent', 'H2': 'consistent'}}]
+    assert q['fits_all_alike'] == ['graded-trial (disputed)']   # consistent and neutral: it contradicts neither
+    assert set(q['resting_on_one_row']) == {'H1', 'H2'}
     flag = m['positions_on_disputed_or_weak_rows'][0]
     assert flag['institution'] == 'the Institute' and flag['row'] == 'graded-trial' and 'disputed' in flag['why']
+    assert any('does not discriminate' in x for x in flag['why'])
     assert m['grid'][1].split()[:3] == ['graded-trial', 'C', 'N']
 
 
@@ -310,9 +316,9 @@ def test_matrix_refuses_defects_part_by_part_and_says_what_to_do(tmp_path):
     assert 'n=700' in why[('graded-trial', None)] and 'design must be one of' in why[('anecdote', None)]
     assert 'not in' in why[('cytokine-study', 'H1')] and 'H3' in why[('cytokine-study', 'H3')]
     assert 'date' in why[('cytokine-study', 'position')]
-    assert out['stored'] == {'explanations': ['H1', 'H2'], 'evidence': ['cytokine-study']}
-    m = w.matrix_show()
-    assert all(e['inconsistent'] == [] for e in m['explanations']) and m['resting_on_no_row'] == ['H1']
+    assert out['stored'] == {'questions': [], 'explanations': ['H1', 'H2'], 'evidence': ['cytokine-study']}
+    q = w.matrix_show()['questions'][0]
+    assert all(e['inconsistent'] == [] for e in q['explanations']) and q['resting_on_no_row'] == ['H1']
 
 
 def test_an_edited_matrix_file_is_revalidated_on_use(tmp_path):
@@ -323,8 +329,9 @@ def test_an_edited_matrix_file_is_revalidated_on_use(tmp_path):
     stored['evidence'][0]['status'] = []
     (w.root / 'matrix.json').write_text(json.dumps(stored))
     m = w.matrix_show()
-    assert m['dropped_on_use'][0]['cell'] == 'H1' and m['explanations'][1]['inconsistent'] == []
-    assert m['positions_on_disputed_or_weak_rows'] == []
+    assert m['dropped_on_use'][0]['cell'] == 'H1'
+    assert all(e['inconsistent'] == [] for e in m['questions'][0]['explanations'])
+    assert 'disputed' not in m['positions_on_disputed_or_weak_rows'][0]['why']
     w.evidence_status('graded-trial', 'disputed', p['critique'], 'recovery rates fell sharply', note='reanalysis')
     assert 'disputed' in w.matrix_show()['positions_on_disputed_or_weak_rows'][0]['why']
 
@@ -337,3 +344,244 @@ def test_a_matrix_row_close_to_a_rests_id_must_use_it(ws):
         {'id': 'registry-study-2025', 'passage': pid, 'words': 'Example Holding A/S (CVR 00000001) sold',
          'design': 'cross_sectional', 'n': None, 'case_definition': None}]})
     assert 'registry-study-2024' in out['refused'][0]['why'] and out['stored']['evidence'] == []
+
+
+def roles(p):
+    """Two questions: what sets the illness off, and what keeps it going. A
+    trigger and a maintaining factor can both be true, so they do not compete."""
+    m = matrix(p)
+    m['questions'] = [{'id': 'onset', 'text': 'What triggers it?'}, {'id': 'course', 'text': 'What maintains it?'}]
+    m['explanations'][0]['answers'] = 'course'
+    m['explanations'][1]['answers'] = 'onset'
+    m['explanations'] += [
+        {'id': 'H2a', 'parent': 'H2', 'claim': 'a viral infection triggers it',
+         'proposed_in': {'passage': p['immune'], 'words': 'an infection triggers lasting'}},
+        {'id': 'H3', 'answers': 'onset', 'claim': 'deconditioning sets it off',
+         'proposed_in': {'passage': p['decon'], 'words': 'deconditioning and fear of activity'}}]
+    trial, cyto = m['evidence']
+    trial['cells'] = {'H1': trial['cells']['H1'], 'H2': {'reading': 'not_applicable'},
+                      'H3': {'reading': 'not_applicable'}}
+    words = 'found altered cytokine profiles early in illness'
+    cyto['cells'] = {'H1': {'reading': 'inconsistent', 'words': words}, 'H2': {'reading': 'consistent', 'words': words},
+                     'H2a': {'reading': 'consistent', 'words': words}, 'H3': {'reading': 'inconsistent', 'words': words}}
+    return m
+
+
+def test_only_explanations_answering_one_question_compete(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    assert w.matrix(roles(p))['refused'] == []
+    m = w.matrix_show()
+    onset, course = m['questions']
+    assert [e['id'] for e in onset['explanations']] == ['H2', 'H2a', 'H3']     # H2a inherits its parent's question
+    assert [e['id'] for e in course['explanations']] == ['H1']
+    assert onset['discriminates'] == [{'row': 'cytokine-study',
+                                       'readings': {'H2': 'consistent', 'H2a': 'consistent', 'H3': 'inconsistent'}}]
+    assert onset['explanations'][0]['consistent_discriminating'] == ['cytokine-study']
+    assert onset['not_yet_weighed'] == {'graded-trial': ['H2a']}    # not_applicable is weighed; a missing cell is not
+    assert onset['explanations'][0]['not_applicable'] == 1 and onset['explanations'][0]['unassessed'] == 0
+    assert 'warning' in course and 'warning' not in onset and course['discriminates'] == []
+    assert m['grid'][0].split() == ['row', 'H2', 'H2a', 'H3', '|', 'H1']      # grouped by question
+    assert m['grid'][1].split()[:6] == ['graded-trial', '-', '.', '-', '|', 'C']
+
+
+def test_questions_and_answers_are_refused_part_by_part(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    bad = roles(p)
+    bad['questions'].append({'id': 'onset', 'text': 'again'})
+    bad['explanations'][3]['answers'] = 'nowhere'
+    bad['explanations'].append({'id': 'H4', 'claim': 'no question', 'proposed_in': bad['explanations'][0]['proposed_in']})
+    bad['explanations'].append({'id': 'H1b', 'parent': 'H1', 'answers': 'onset', 'claim': 'a variant elsewhere',
+                                'proposed_in': bad['explanations'][0]['proposed_in']})
+    why = {(r.get('question') or r.get('explanation')): r['why'] for r in w.matrix(bad)['refused']
+           if 'row' not in r}
+    assert 'duplicate question' in why['onset'] and 'onset, course' in why['H3'] and 'onset, course' in why['H4']
+    assert 'same question as its parent' in why['H1b']
+    plain = matrix(p)                       # no questions: "answers" has nothing to name
+    plain['explanations'][0]['answers'] = 'onset'
+    assert 'add "questions"' in w.matrix(plain)['refused'][0]['why']
+
+
+def test_a_position_has_a_stance_and_only_holding_one_on_weak_rows_is_flagged(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = matrix(p)
+    del m['evidence'][0]['positions'][0]['stance']
+    out = w.matrix(m)
+    assert 'needs a stance' in out['refused'][0]['why'] and 'rejects' in out['refused'][0]['why']
+    for stance, flagged in (('rejects', False), ('withdraws', False), ('qualifies', True), ('endorses', True)):
+        m['evidence'][0]['positions'][0]['stance'] = stance
+        assert w.matrix(m)['refused'] == []
+        flags = w.matrix_show()['positions_on_disputed_or_weak_rows']
+        assert bool(flags) == flagged and (not flags or flags[0]['stance'] == stance)
+
+
+def test_row_years_show_how_recent_each_question_s_evidence_is(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = roles(p)
+    m['evidence'][0]['year'] = 2011
+    m['evidence'][1]['year'] = 2019
+    out = w.matrix(m)
+    assert 'year=2019' in out['refused'][0]['why'] and out['stored']['evidence'] == ['graded-trial']
+    m['evidence'][1]['year'] = None
+    w.matrix(m)
+    meta = json.loads((w.root / 'workspace.json').read_text())
+    (w.root / 'workspace.json').write_text(json.dumps({**meta, 'created': '2026-09-22T10:00:00+00:00'}))
+    onset, course = w.matrix_show()['questions']
+    assert course['newest_row_year'] == 2011 and 'newest and largest' in course['coverage']
+    assert onset['newest_row_year'] is None and 'add "year"' in onset['coverage']   # the trial is n/a to onset
+    (w.root / 'workspace.json').write_text(json.dumps({**meta, 'created': '2014-01-01T10:00:00+00:00'}))
+    assert 'coverage' not in w.matrix_show()['questions'][1]
+
+
+def test_a_row_year_may_be_the_year_its_source_is_dated(ws):
+    w, sid, pid = ws                        # the page is dated 2025-03-01 and says "in 2024"
+    row = {'id': 'filing', 'passage': pid, 'words': 'sold its stake in', 'design': 'cross_sectional',
+           'n': None, 'case_definition': None}
+    for year, ok in ((2025, True), (2024, True), (2023, False)):
+        assert (w.matrix({'explanations': [], 'evidence': [{**row, 'year': year}]})['refused'] == []) == ok
+
+
+# ── fetching: what is stored must be the document ──────────────────────────
+NAV = ' '.join(f'Menu item {i}' for i in range(60)).encode()
+
+
+@pytest.mark.parametrize('page, why', [
+    (b'<html><body><h1>Just a moment...</h1><p>Checking your browser before accessing the site. '
+     b'This may take a few seconds.</p></body></html>', 'bot wall'),
+    (b'<html><body><p>Client Challenge A required part of this site could not load. Please check your '
+     b'connection, disable any ad blockers, or try using a different browser.</p></body></html>', 'bot wall'),
+    (b'<html><body><noscript><p>This site requires Javascript to function effectively.</p></noscript><nav>'
+     + NAV + b'</nav></body></html>', 'bot wall'),
+    (b'{"version":"6.9","hitCount":0,"request":{"queryString":"DOI:10.1000/xyz","resultType":"core",'
+     b'"cursorMark":"*","pageSize":25},"resultList":{"result":[]}}', 'bot wall'),
+    (b'<html><body><p>pubmed.ncbi.nlm.nih.gov</p></body></html>', 'almost no text')])
+def test_bot_walls_and_empty_shells_are_refused_not_stored(tmp_path, page, why):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    with pytest.raises(ToolError) as e:
+        w.ingest('https://journal.example/article/1', page, 200)
+    assert why in str(e.value) and 'Europe PMC' in str(e.value) and 'archive' in str(e.value)
+    assert w.sources() == {} and w.store.fetches() == []
+
+
+def test_a_long_article_about_captchas_is_still_an_article(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    page = b'<html><body><p>Why a captcha asks if you are a robot. ' + NAV * 4 + b'</p></body></html>'
+    assert w.ingest('https://news.example/captcha', page, 200)['chars'] > 3000
+
+
+def test_a_blocked_fetch_says_where_else_to_look(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def forbidden(*a, **k):
+        raise urllib.error.HTTPError('https://journal.example/a', 403, 'Forbidden', {}, None)
+    monkeypatch.setattr(urllib.request, 'urlopen', forbidden)
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw')
+    w.init('q')
+    with pytest.raises(ToolError, match='doi.org'):
+        w.fetch('https://journal.example/a')
+
+
+JATS = (b'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE article PUBLIC "-//NLM//DTD JATS//EN" "JATS.dtd">'
+        b'<article><front><article-meta><title-group><article-title>A cohort of patients</article-title>'
+        b'</title-group><pub-date pub-type="epub"><day>08</day><month>08</month><year>2025</year></pub-date>'
+        b'</article-meta></front><body><sec><title>Results</title><p>Of 17 participants, <italic>most</italic> '
+        b'reported onset after an infection, which the authors describe in detail in the sections below.</p>'
+        b'</sec></body></article>')
+
+
+def test_full_text_xml_is_read_as_text_with_its_own_date(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    out = w.ingest('https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1/fullTextXML', JATS, 200)
+    assert out['published_on'] == '2025-08-08' and out['date_basis'] == 'jats pub-date'
+    text = w.read(out['id'])
+    assert 'A cohort of patients' in text and 'Results Of 17 participants, most reported onset' in text
+    year_only = JATS.replace(b'<day>08</day><month>08</month>', b'')
+    assert w.ingest('https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2/fullTextXML',
+                    year_only, 200)['published_on'] == '2025'
+    xhtml = b'<?xml version="1.0" encoding="UTF-8"?>\n<html><body><p>' + NAV + b'</p></body></html>'
+    assert w.ingest('https://site.example/x', xhtml, 200)['chars'] > 100
+
+
+def pdf(text: str) -> bytes:
+    """A one-page PDF with a text layer, offsets computed."""
+    stream = f'BT /F1 12 Tf 72 720 Td ({text}) Tj ET'.encode()
+    objs = [b'<< /Type /Catalog /Pages 2 0 R >>', b'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+            b'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R '
+            b'/Resources << /Font << /F1 5 0 R >> >> >>',
+            b'<< /Length %d >>\nstream\n' % len(stream) + stream + b'\nendstream',
+            b'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']
+    out, offsets = b'%PDF-1.4\n', []
+    for i, o in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += b'%d 0 obj\n' % i + o + b'\nendobj\n'
+    xref = len(out)
+    out += b'xref\n0 %d\n0000000000 65535 f \n' % (len(objs) + 1) + b''.join(b'%010d 00000 n \n' % x for x in offsets)
+    return out + b'trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n' % (len(objs) + 1, xref)
+
+
+def test_a_pdf_is_read_by_its_text_layer_or_refused_clearly(tmp_path, monkeypatch):
+    import sys
+    pytest.importorskip('pypdf')
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    body = 'The cohort enrolled 17 participants after an infection and followed them for two years in the clinic.'
+    out = w.ingest('https://journal.example/paper.pdf', pdf(body), 200)
+    assert body in w.read(out['id'])
+    monkeypatch.setitem(sys.modules, 'pypdf', None)
+    with pytest.raises(ToolError, match='no PDF reader'):
+        w.ingest('https://journal.example/other.pdf', pdf(body + ' Again.'), 200)
+
+
+def test_a_year_padded_to_january_first_keeps_the_year_only(tmp_path):
+    from gleipnir.workspace import date_candidates, pick_date
+    meta = lambda *pairs: (b'<html><head>' + b''.join(b'<meta name="%s" content="%s">' % p for p in pairs)
+                           + b'</head><body><p>x</p></body></html>')
+    padded = meta((b'citation_publication_date', b'2025/01/01'), (b'citation_date', b'2025-08-08'))
+    assert pick_date(date_candidates(padded, 'https://x.example/a')) [:3:2] == ('2025-08-08', False)
+    assert pick_date(date_candidates(meta((b'citation_date', b'2025'),), 'https://x.example/a'))[0] == '2025'
+    assert pick_date(date_candidates(meta((b'dc.date', b'2025-03'),), 'https://x.example/a'))[0] == '2025-03'
+    clash = meta((b'citation_date', b'2024-05-01'), (b'dc.date', b'2025-08-08'))
+    assert pick_date(date_candidates(clash, 'https://x.example/a'))[2] is True
+
+
+def test_papers_found_through_one_repository_are_not_one_origin(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    for n, host in enumerate(('https://www.ebi.ac.uk/europepmc/webservices/rest/PMC1/fullTextXML',
+                              'https://www.ebi.ac.uk/europepmc/webservices/rest/PMC2/fullTextXML',
+                              'https://pmc.ncbi.nlm.nih.gov/articles/PMC3/', 'https://www.nih.gov/news/a',
+                              'https://news.example/a', 'https://news.example/b')):
+        sid = w.ingest(host, JATS.replace(b'17', str(20 + n).encode()), 200)['id']
+        w.origin(sid, f'group-{n}', basis='its own paper', declared_by='test')
+    warnings = w.status()['origin_warnings']
+    assert len(warnings) == 1 and warnings[0].startswith('news.example')
+
+
+def test_the_support_model_is_found_beside_the_store_not_the_working_directory(tmp_path, monkeypatch):
+    from gleipnir import pretrained
+    model = tmp_path / 'store' / 'models' / 'nli-MiniLM2-L6-H768'
+    model.mkdir(parents=True)
+    (model / 'manifest.json').write_text('{}')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pretrained, '__file__', str(tmp_path / 'pkg' / 'src' / 'gleipnir' / 'pretrained.py'))
+    assert pretrained.find_directory(tmp_path / 'store') == model
+    with pytest.raises(FileNotFoundError, match='prepare_nli'):
+        pretrained.find_directory(tmp_path / 'elsewhere')
+    (tmp_path / 'pkg' / 'raw').mkdir(parents=True)
+    (tmp_path / 'pkg' / 'raw' / 'models').symlink_to(tmp_path / 'store' / 'models')
+    assert pretrained.find_directory() == tmp_path / 'pkg' / 'raw' / 'models' / 'nli-MiniLM2-L6-H768'
+
+
+def test_a_finding_or_a_record_is_not_flagged_for_lacking_an_n(tmp_path):
+    w, p = matrix_ws(tmp_path)
+    m = matrix(p)
+    m['evidence'][0].update(design='official_finding', n=None, case_definition=None, status=[])
+    w.matrix(m)
+    assert w.matrix_show()['grid'][1].endswith('official_finding')     # no n or case definition to ask for
+    assert all('n not stated' not in f['why'] for f in w.matrix_show()['positions_on_disputed_or_weak_rows'])
+    m['evidence'][0]['design'] = 'testimony'
+    w.matrix(m)
+    assert 'testimony' in w.matrix_show()['positions_on_disputed_or_weak_rows'][0]['why']

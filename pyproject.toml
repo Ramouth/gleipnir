@@ -14,6 +14,7 @@ dependencies = [
 [project.optional-dependencies]
 oracle = ["anthropic>=1.0"]   # bounded extraction and alignment assessment
 nli = ["onnxruntime>=1.20,<2", "tokenizers>=0.21,<1"]  # pretrained CPU baseline
+pdf = ["pypdf>=5"]            # fetch reads a PDF's text layer; without it PDFs are refused
 web = [                       # the analyst workbench; the library needs none of it
     "fastapi>=0.110",
     "jinja2>=3.1",

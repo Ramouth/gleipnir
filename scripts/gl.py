@@ -4,7 +4,8 @@
   gl.py fetch   WS URL [--publisher NAME]
   gl.py read    WS SOURCE_ID [--find "exact words"] [--around 1500]
   gl.py cut     WS SOURCE_ID "exact anchor words" [--before 200] [--after 600]
-  gl.py check   WS ATOMS.json [--support]     (a JSON list of atoms; `-` reads stdin)
+  gl.py check   WS ATOMS.json [--support]     (a JSON list of atoms; `-` reads stdin; the support
+                model is looked up in STORE/models, then raw/models here or above the package)
   gl.py add     WS ATOMS.json
   gl.py origin  WS SOURCE_ID GROUP --basis "why" [--by NAME]
                 (which reports copy each other: same text, same outlet)
@@ -17,8 +18,8 @@
                 (CATEGORY: peer_reviewed, edited, institutional, interested_party, expert, unedited, aggregator)
   gl.py evidence WS EVIDENCE STATUS PASSAGE_ID "exact words" --note "why"
                 (STATUS: retracted, corrected, disputed)
-  gl.py matrix  WS [MATRIX.json]            (competing explanations x evidence; with a file: validate
-                and store it, replacing the last; without: show the matrix)
+  gl.py matrix  WS [MATRIX.json]            (questions, competing explanations x evidence; with a file:
+                validate and store it, replacing the last; without: show the matrix per question)
   gl.py compare WS "subject words" [--link-same-labels]
   gl.py explain WS "SUBJECT|RELATION" REASON PASSAGE_ID "exact quote" --note "why"
                 (REASON: time, definition, speaker, copying, hedge, error, unexplained)
@@ -77,8 +78,8 @@ def main():
         elif a.command == 'check':
             classifier = None
             if a.support:
-                from gleipnir.pretrained import PretrainedNLIBackend
-                classifier = PretrainedNLIBackend()
+                from gleipnir.pretrained import PretrainedNLIBackend, find_directory
+                classifier = PretrainedNLIBackend(find_directory(a.store))
             out = ws.check(atoms_arg(), classifier)
         elif a.command == 'add':
             out = ws.add(atoms_arg())
@@ -96,8 +97,13 @@ def main():
             if not rest:
                 out = ws.matrix_show()                  # one screen: the grid, then one line per item
                 print('\n'.join(out.pop('grid')))
-                for e in out.pop('explanations'):
-                    print(json.dumps(e, ensure_ascii=False))
+                for q in out.pop('questions'):
+                    print(f"\n== {q.pop('id')}: {q.pop('text')}")
+                    for e in q.pop('explanations'):
+                        print(json.dumps(e, ensure_ascii=False))
+                    for k, v in q.items():
+                        print(f'  {k}: {json.dumps(v, ensure_ascii=False)}')
+                print()
                 for k, v in out.items():
                     print(f'{k}: {json.dumps(v, ensure_ascii=False)}')
                 return

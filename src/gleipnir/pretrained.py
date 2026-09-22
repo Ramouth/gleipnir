@@ -31,6 +31,22 @@ METHOD = 'pretrained-nli-onnx/1'
 MAX_TOKENS = 512
 
 
+def find_directory(store: Path | None = None) -> Path:
+    """The model directory: beside the raw store if given, else under the
+    current directory, else under the repository that holds this package (a
+    git worktree sits inside its main checkout). Never just the working
+    directory, which changes with the caller."""
+    tail = DEFAULT_DIRECTORY.relative_to('raw')
+    here = Path(__file__).resolve()
+    candidates = ([Path(store) / tail] if store else []) + [DEFAULT_DIRECTORY.resolve()] + \
+        [parent / DEFAULT_DIRECTORY for parent in here.parents]
+    for directory in candidates:
+        if (directory / 'manifest.json').exists():
+            return directory
+    raise FileNotFoundError(f'no support model in {candidates[0]} or any raw/models above {here.parent}: '
+                            'run scripts/prepare_nli.py, or pass --store where raw/models lives')
+
+
 class ContextWindowExceeded(ValueError):
     pass
 
@@ -88,10 +104,10 @@ def verify_artifacts(directory: Path) -> dict:
 
 
 class PretrainedNLIBackend:
-    def __init__(self, directory: Path = DEFAULT_DIRECTORY, *, threads: int = 2):
+    def __init__(self, directory: Path | None = None, *, threads: int = 2):
         if threads < 1:
             raise ValueError('threads must be positive')
-        self.directory = Path(directory)
+        self.directory = Path(directory) if directory else find_directory()
         self.threads = threads
         self.manifest = verify_artifacts(self.directory)
         config = json.loads((self.directory / 'config.json').read_text())

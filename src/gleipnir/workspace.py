@@ -13,8 +13,10 @@ recomputed from them on use:
 - a source is re-verified on every use: its id embeds its hash and host, and
   the fetch log must show that hash fetched from that URL;
 - page text is re-extracted from the bytes (hidden content dropped), and the
-  page type is sniffed from the bytes, not read from a file;
-- dates come only from the page's own metadata, validated as calendar dates;
+  page type (HTML, XML, PDF, text) is sniffed from the bytes, not read from a file;
+- a bot wall, challenge page or empty shell is refused at fetch, never stored;
+- dates come only from the page's own metadata, validated as calendar dates and
+  kept at the resolution given (a year stays a year);
 - passages are re-cut at their offsets, atoms re-checked on `add` and again on
   `compare`, which rebuilds its graph from atoms.jsonl and never reads a saved one;
 - origin groups are declarations with a basis and an author; a source with no
@@ -25,7 +27,8 @@ recomputed from them on use:
   evidence, and an atom with no evidence declared never counts as independent evidence;
 - the matrix of competing explanations is re-validated from matrix.json on
   every use: each explanation, cell, status and institutional position must
-  quote a stored passage, and a study's n and case definition must stand in it;
+  quote a stored passage, and a study's n, case definition and year must stand
+  in it; only explanations answering the same question compete;
 - a small-model flag reaches the LLM as a neutral question, never with a score;
 - source text is wrapped in markers carrying a fresh random nonce, so a page
   cannot close the data block and speak as the tool.
@@ -60,14 +63,35 @@ UA = 'Mozilla/5.0 (X11; Linux x86_64) gleipnir-research/0.1 (personal, non-comme
 DATE_KEYS = {'article:published_time', 'datepublished', 'og:published_time', 'publish-date',
              'publish_date', 'publishdate', 'date', 'dc.date', 'dc.date.issued',
              'citation_date', 'citation_online_date', 'citation_publication_date'}
-DATE_VALUE = re.compile(r'^\s*(\d{4})[-/](\d{2})[-/](\d{2})')
+DATE_VALUE = re.compile(r'^\s*(\d{4})(?:[-/](\d{1,2})(?:[-/](\d{1,2}))?)?(?![\d:])')
 HIDDEN_STYLE = re.compile(r'display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(\.0+)?\s*(;|$)|'
                           r'font-size\s*:\s*0(px|em|rem|%)?\s*(;|$)|(left|top)\s*:\s*-\d{3,}px', re.I)
 TRACKING = re.compile(r'^(utm_\w+|fbclid|gclid|ref|via|amp)$', re.I)
 ARXIV_ORDER = 'arxiv identifier (month of first version)'
+MIN_TEXT, SHORT_PAGE = 100, 3000
+WALL = re.compile(r'just a moment|captcha|enable javascript|turn on javascript|requires javascript|'
+                  r'javascript is (disabled|required)|access denied|are you a robot|not a robot|'
+                  r'checking your browser|client challenge|verify you are (a )?human|attention required|'
+                  r'unusual traffic|"hitcount"\s*:\s*0\b', re.I)
+ELSEWHERE = ("try the publisher's other host, Europe PMC (europepmc.org; full text as XML at "
+             'https://www.ebi.ac.uk/europepmc/webservices/rest/PMC.../fullTextXML), the DOI '
+             '(https://doi.org/...), or an archived copy (https://web.archive.org/web/URL)')
+#: Hosts that hold documents from many publishers. Each document there is its
+#: own outlet: two papers found through one index are not one origin.
+REPOSITORIES = ('europepmc.org', 'ebi.ac.uk', 'ncbi.nlm.nih.gov', 'doi.org', 'arxiv.org', 'archive.org',
+                'biorxiv.org', 'medrxiv.org', 'ssrn.com', 'zenodo.org', 'osf.io', 'semanticscholar.org',
+                'researchgate.net', 'core.ac.uk', 'hal.science', 'jstor.org', 'scholar.archive.org',
+                'documentcloud.org', 'archives.gov', 'govinfo.gov', 'scribd.com')
 RELAY_ACTS = ('verifies', 'qualifies', 'disputes', 'distorts')
 EVIDENCE_STATUS = ('retracted', 'corrected', 'disputed')
-READINGS = ('consistent', 'inconsistent', 'neutral')
+READINGS = ('consistent', 'inconsistent', 'neutral', 'not_applicable')
+LETTERS = {'consistent': 'C', 'inconsistent': 'I', 'neutral': 'N', 'not_applicable': '-'}
+IMPLICIT = 'Q'                      # the one question of a matrix that names none
+STALE_YEARS = 5
+STANCES = {'endorses': 'holds the explanation, or relies on the evidence for it',
+           'qualifies': 'holds it with a limit or caveat',
+           'rejects': 'holds it false, or the evidence insufficient',
+           'withdraws': 'takes back a position it held'}
 DESIGNS = {
     'meta_analysis': 'pooled analysis of several studies',
     'systematic_review': 'structured review of the literature',
@@ -80,8 +104,13 @@ DESIGNS = {
     'case_series': 'several patients described, no controls',
     'case_report': 'one patient',
     'expert_opinion': 'a view without new data',
+    'official_finding': "an inquiry, commission, court or agency's finding",
+    'forensic': 'a physical or technical examination: ballistics, autopsy, acoustics, an engineering test',
+    'document': 'a primary record: a memo, filing, log, cable or recording',
+    'testimony': "a witness's account",
 }
-WEAK_DESIGNS = ('case_series', 'case_report', 'expert_opinion')
+WEAK_DESIGNS = ('case_series', 'case_report', 'expert_opinion', 'testimony')
+UNCOUNTED = ('official_finding', 'forensic', 'document', 'testimony')   # no n or case definition to state
 ACCOUNTABILITY = {
     'peer_reviewed': 'a journal or preprint server with review',
     'edited': 'a newsroom or publisher with editors and a corrections practice',
@@ -104,6 +133,15 @@ def _valid(y: str, m: str, d: str) -> str | None:
         return None
 
 
+def _partial(y: str, m: str | None, d: str | None) -> str | None:
+    """A date at the resolution the source gives it: a year stays a year."""
+    if m is None:
+        return y if 1000 <= int(y) <= 2999 else None
+    if d is None:
+        return f'{y}-{int(m):02}' if 1 <= int(m) <= 12 else None
+    return _valid(y, m, d)
+
+
 def _decode(payload: bytes) -> str:
     try:
         return payload.decode('utf-8-sig')
@@ -111,22 +149,77 @@ def _decode(payload: bytes) -> str:
         raise ToolError('page is not UTF-8; other encodings are not supported yet') from None
 
 
+def is_pdf(payload: bytes) -> bool:
+    return payload[:1024].lstrip().startswith(b'%PDF-')
+
+
+def is_xml(payload: bytes) -> bool:
+    """An XML document that is not a web page: a full-text article (JATS), a feed."""
+    head = payload[:65536].lstrip(b'\xef\xbb\xbf \t\r\n')
+    return head.startswith(b'<?xml') and b'<html' not in head.lower()
+
+
 def is_html(payload: bytes) -> bool:
     """Sniffed, never declared: a byte-order mark, a leading comment or a line of
     text before <html> does not turn markup into plain text."""
     head = payload[:65536].lower()
-    return any(tag in head for tag in (b'<html', b'<body', b'<!doctype html', b'<p>', b'<p ', b'<div'))
+    return not is_pdf(payload) and not is_xml(payload) and \
+        any(tag in head for tag in (b'<html', b'<body', b'<!doctype html', b'<p>', b'<p ', b'<div'))
 
 
 def _document(payload: bytes):
     parser = html.HTMLParser(huge_tree=True, remove_comments=True)
-    return html.fromstring(_decode(payload), parser=parser)
+    text = re.sub(r'^\s*<\?xml[^>]*\?>', '', _decode(payload))   # XHTML: lxml refuses a declared encoding in str
+    return html.fromstring(text, parser=parser)
+
+
+def _xml(payload: bytes):
+    from lxml import etree
+    parser = etree.XMLParser(huge_tree=True, remove_comments=True, resolve_entities=False, no_network=True)
+    try:
+        return etree.fromstring(payload, parser=parser)
+    except etree.XMLSyntaxError as e:
+        raise ToolError(f'the XML does not parse ({e}): fetch the HTML page or the PDF instead') from None
+
+
+XML_INLINE = {'italic', 'bold', 'sub', 'sup', 'sc', 'underline', 'monospace', 'xref', 'ext-link',
+              'named-content', 'inline-formula', 'styled-content', 'b', 'i', 'em', 'strong', 'span', 'a'}
+
+
+def _xml_text(payload: bytes) -> str:
+    """Text of an XML document, with a space between block elements so a title
+    and the paragraph after it do not run together."""
+    root = _xml(payload)
+    for el in root.iter():
+        if isinstance(el.tag, str) and el.tag.split('}')[-1] not in XML_INLINE:
+            el.tail = ' ' + (el.tail or '')
+    return ' '.join(''.join(root.itertext()).split())
+
+
+def _pdf_text(payload: bytes) -> str:
+    try:
+        from io import BytesIO
+        from pypdf import PdfReader
+    except ImportError:
+        raise ToolError('this is a PDF and no PDF reader is installed (pypdf): fetch the HTML version, '
+                        'the Europe PMC full text, or the DOI landing page instead') from None
+    try:
+        reader = PdfReader(BytesIO(payload))
+        return ' '.join(' '.join((page.extract_text() or '') for page in reader.pages).split())
+    except Exception as e:
+        raise ToolError(f'the PDF could not be read ({type(e).__name__}): fetch the HTML version, '
+                        'the Europe PMC full text, or the DOI landing page instead') from None
 
 
 def page_text(payload: bytes) -> str:
     """What a reader of the page is shown. Scripts, styles, templates and
     hidden elements are dropped, comments never parsed, and deep nesting kept
-    (huge_tree), so text cannot hide in markup or vanish in it."""
+    (huge_tree), so text cannot hide in markup or vanish in it. XML is read as
+    text (entities never resolved), a PDF by its text layer."""
+    if is_pdf(payload):
+        return _pdf_text(payload)
+    if is_xml(payload):
+        return _xml_text(payload)
     if not is_html(payload):
         return ' '.join(_decode(payload).split())
     doc = _document(payload)
@@ -136,6 +229,21 @@ def page_text(payload: bytes) -> str:
         if HIDDEN_STYLE.search(el.get('style', '')):
             el.drop_tree()
     return ' '.join(doc.text_content().split())
+
+
+def not_a_document(payload: bytes, text: str) -> str | None:
+    """Why a fetched page is not the document asked for (a bot wall, a challenge,
+    a script-only shell, an empty result), or None. Markers count only on a
+    short page, so an article about captchas is still an article."""
+    if len(text) < SHORT_PAGE:
+        shown = text
+        if is_html(payload):
+            shown += ' ' + ' '.join(n.text_content() for n in _document(payload).xpath('//noscript'))
+        if m := WALL.search(shown):
+            return f'the page looks like a bot wall or challenge page, not the document ("{m.group(0)}")'
+    if len(text) < MIN_TEXT:
+        return f'the page has almost no text ({len(text)} characters): an empty result or a shell'
+    return None
 
 
 def date_candidates(payload: bytes, url: str) -> dict[str, list[str]]:
@@ -161,13 +269,19 @@ def date_candidates(payload: bytes, url: str) -> dict[str, list[str]]:
                 kinds = kind if isinstance(kind, list) else [kind]
                 if isinstance(item, dict) and isinstance(item.get('datePublished'), str) \
                         and not ({'WebSite', 'Organization', 'WebPage'} & set(k for k in kinds if k)):
-                    if (m := DATE_VALUE.match(item['datePublished'])) and (d := _valid(*m.groups())):
+                    if (m := DATE_VALUE.match(item['datePublished'])) and (d := _partial(*m.groups())):
                         found['json-ld datePublished'].append(d)
         for meta in doc.xpath('//head//meta'):     # a card in the body cannot date the page
             key = (meta.get('property') or meta.get('name') or meta.get('itemprop') or '').lower()
             if key in DATE_KEYS and (m := DATE_VALUE.match(meta.get('content') or '')) \
-                    and (d := _valid(*m.groups())):
+                    and (d := _partial(*m.groups())):
                 found['citation meta' if key.startswith('citation') else 'meta tag'].append(d)
+    elif is_xml(payload):                          # a JATS article's own publication dates
+        for pd in _xml(payload).xpath('//*[local-name()="article-meta"]/*[local-name()="pub-date"]'):
+            part = lambda k: next((x.text.strip() for x in pd if isinstance(x.tag, str)
+                                   and x.tag.split('}')[-1] == k and (x.text or '').strip().isdigit()), None)
+            if (y := part('year')) and (d := _partial(y, part('month'), part('month') and part('day'))):
+                found['jats pub-date'].append(d)
     parsed = urlparse(url)
     if parsed.netloc.endswith('arxiv.org') and \
             (m := re.match(r'/(?:abs|html|pdf)/(\d{2})(\d{2})\.\d{4,5}', parsed.path)):
@@ -178,11 +292,19 @@ def date_candidates(payload: bytes, url: str) -> dict[str, list[str]]:
 
 def pick_date(cands: dict[str, list[str]]) -> tuple[str | None, str, bool]:
     """(date, basis, conflict). Several different dates are a conflict to show,
-    not something to resolve silently; the first by priority is used."""
-    values = {v[:7] for vs in cands.values() for v in vs}
-    for basis in ('json-ld datePublished', 'citation meta', 'meta tag', ARXIV_ORDER):
+    not something to resolve silently; the first by priority is used, at the
+    resolution it is given. A January 1 beside another date of the same year is
+    read as a year padded to a date ("2025/01/01" and "2025-08-08" say 2025), and
+    a coarser date is refined by a finer one it agrees with."""
+    raw = {v for vs in cands.values() for v in vs}
+    norm = lambda v: v[:4] if v.endswith('-01-01') and any(w[:4] == v[:4] and w != v for w in raw) else v
+    values = {norm(v) for v in raw}
+    fits = lambda a, b: a[:7].startswith(b[:7]) or b[:7].startswith(a[:7])
+    conflict = any(not fits(a, b) for a in values for b in values)
+    for basis in ('json-ld datePublished', 'citation meta', 'jats pub-date', 'meta tag', ARXIV_ORDER):
         if cands.get(basis):
-            return cands[basis][0], basis, len(values) > 1
+            chosen = norm(cands[basis][0])
+            return max((v for v in values if v.startswith(chosen)), key=len), basis, conflict
     return None, 'none', False
 
 
@@ -204,8 +326,15 @@ def _canonical_url(url: str) -> str:
     return urlunparse((p.scheme, _domain(url), p.path.rstrip('/'), '', query, ''))
 
 
+def _outlet(url: str) -> str:
+    """Who published the page: its domain, except on a repository, where each
+    document is its own outlet."""
+    host = _host(url)
+    return _canonical_url(url) if any(host == r or host.endswith('.' + r) for r in REPOSITORIES) else _domain(url)
+
+
 def _independent(origins: set[tuple[str, str]]) -> int:
-    """Distinct origin groups, merging any that share a domain: one outlet
+    """Distinct origin groups, merging any that share an outlet: one outlet
     under several names or hosts counts once."""
     parent = {g: g for g, _ in origins}
 
@@ -237,6 +366,7 @@ class Workspace:
     def __init__(self, root: Path, store: Path = Path('raw'), classifier=None):
         self.root = Path(root)
         self.store = RawStore(store)
+        self.store_dir = Path(store)
         self._texts: dict[str, str] = {}
         self._dates: dict[str, tuple] = {}
         self._classifier = classifier
@@ -246,8 +376,8 @@ class Workspace:
         atom then shows `support_not_run` rather than passing silently."""
         if self._classifier is None:
             try:
-                from gleipnir.pretrained import PretrainedNLIBackend
-                self._classifier = PretrainedNLIBackend()
+                from gleipnir.pretrained import PretrainedNLIBackend, find_directory
+                self._classifier = PretrainedNLIBackend(find_directory(self.store_dir))
             except Exception:
                 self._classifier = False
         return self._classifier or None
@@ -322,11 +452,16 @@ class Workspace:
                 payload, status = resp.read(), resp.status
         except Exception as e:
             self.log('fetch', url=url, error=str(e))
-            raise ToolError(f'fetch failed: {e}') from None
+            blocked = getattr(e, 'code', None) in (401, 403, 429, 451, 503)
+            raise ToolError(f'fetch failed: {e}' + (f': the site blocks this client; {ELSEWHERE}' if blocked else '')) \
+                from None
         return self.ingest(url, payload, status, publisher=publisher)
 
     def ingest(self, url: str, payload: bytes, status: int, publisher: str | None = None) -> dict:
         text = page_text(payload)                       # refuses before storing a bad page
+        if why := not_a_document(payload, text):
+            self.log('fetch', url=url, refused=why)
+            raise ToolError(f'{why}: nothing stored; {ELSEWHERE}')
         rec = self.store.put(payload=payload, source='web', resource_type='web_page', resource_id=url,
                              http_status=status, request_params={})
         sid = f'web:{_host(url)}/{rec.content_hash[:10]}'
@@ -505,7 +640,7 @@ class Workspace:
         by_host = defaultdict(set)
         for s in self.sources().values():
             if g := self._origin(s):
-                by_host[_domain(s['url'])].add(g)
+                by_host[_outlet(s['url'])].add(g)
         return [f'{host} has {len(g)} origin groups {sorted(g)}: counted as one; pages of one site '
                 'rarely count as independent' for host, g in by_host.items() if len(g) > 1]
 
@@ -575,7 +710,7 @@ class Workspace:
                     values.add((value or '').casefold().strip())
                     counted.append(c['source'])
                     if origin:
-                        origins.add((origin, _domain(s['url'])))
+                        origins.add((origin, _outlet(s['url'])))
                     if not evs:
                         undeclared.add(c['source'])
                     holds = c.get('holds') if isinstance(c.get('holds'), dict) else {}
@@ -948,48 +1083,83 @@ class Workspace:
             return why
         if r.get('design') not in DESIGNS:
             return 'design must be one of: ' + '; '.join(f'{k} ({v})' for k, v in DESIGNS.items())
-        text = self.passage(r['passage']).text
-        n, cd = r.get('n'), r.get('case_definition')
+        passage = self.passage(r['passage'])
+        text = passage.text
+        n, cd, year = r.get('n'), r.get('case_definition'), r.get('year')
         if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < 1 or not re.search(
-                rf'(?<![\d.]){n}(?!\d)', re.sub(r'(?<=\d)[,   ](?=\d{3}(?!\d))', '', text))):
+                rf'(?<![\d.]){n}(?!\d)', re.sub(r'(?<=\d)[,   ](?=\d{3}(?!\d))', '', text))):
             return f'n={n!r} is not a number stated in {r["passage"]}: cut the passage that states it, or write null'
         if cd is not None and (not isinstance(cd, str) or not cd.strip() or _ws(cd) not in _ws(text)):
             return (f'case_definition must be words of {r["passage"]} (e.g. "Fukuda criteria"), or null '
                     'if the passage does not say who counted as a case')
+        if year is not None and (not isinstance(year, int) or isinstance(year, bool) or not (
+                re.search(rf'(?<!\d){year}(?!\d)', text) or (passage.source_date or '')[:4] == str(year))):
+            return (f'year={year!r} is neither stated in {r["passage"]} nor the year its source is dated: '
+                    'cut the passage that states it, or leave year out')
         return None
 
     def _matrix_check(self, data) -> tuple[dict, list[dict]]:
         """The part of a matrix that stands, in the submitted form, and every
         refused part with what to do instead. Run on submit and on every use."""
         if not isinstance(data, dict):
-            raise ToolError('a matrix is a JSON object with "explanations" and "evidence" lists')
-        refused, hyps = [], {}
+            raise ToolError('a matrix is a JSON object with "questions", "explanations" and "evidence" lists')
+        refused, questions = [], {}
+        for q in data.get('questions') or []:
+            q = q if isinstance(q, dict) else {}
+            qid, text = str(q.get('id') or '').strip(), str(q.get('text') or '').strip()
+            why = ('a question needs an id and a text' if not qid or not text
+                   else f'duplicate question {qid}' if qid in questions else None)
+            if why:
+                refused.append({'question': qid or '?', 'why': why})
+            else:
+                questions[qid] = {'id': qid, 'text': text}
+        implicit = not data.get('questions')          # no questions: one implicit question, as before
+        hyps = {}
         for h in data.get('explanations') or []:
             h = h if isinstance(h, dict) else {}
-            hid, where = str(h.get('id') or '').strip(), h.get('proposed_in')
+            hid, where, answers = str(h.get('id') or '').strip(), h.get('proposed_in'), h.get('answers')
             where = where if isinstance(where, dict) else {}
+            answers = answers if answers is None or isinstance(answers, str) else repr(answers)
             why = ('an explanation needs an id and a claim' if not hid or not str(h.get('claim') or '').strip()
                    else f'duplicate explanation {hid}' if hid in hyps
+                   else f'"answers" {answers!r} names no question: add "questions" to the file, or drop "answers"'
+                   if implicit and answers not in (None, IMPLICIT)
+                   else f'"answers" must name one of the questions: {", ".join(questions) or "none stands"}'
+                   if not implicit and (answers not in questions if answers is not None else h.get('parent') is None)
                    else self._quoted(where.get('passage'), where.get('words'),
                                      'proposed_in (the passage that proposes it and its words)'))
             if why:
                 refused.append({'explanation': hid or '?', 'why': why})
             else:
                 hyps[hid] = {'id': hid, 'claim': h['claim'], 'proposed_in': {k: where[k] for k in ('passage', 'words')},
+                             'answers': IMPLICIT if implicit else answers,
                              **({'parent': h['parent']} if h.get('parent') is not None else {})}
+                if 'parent' in hyps[hid] and answers is None:
+                    hyps[hid]['answers'] = None      # a variant answers its parent's question
+
+        def answers_of(hid):
+            while hyps[hid]['answers'] is None:
+                hid = hyps[hid]['parent']
+            return hyps[hid]['answers']
         changed = True
-        while changed:                      # a sub-hypothesis needs a standing parent, and no cycle
+        while changed:                      # a variant needs a standing parent, no cycle, and the same question
             changed = False
             for hid, h in list(hyps.items()):
                 p, seen = h.get('parent'), {hid}
                 while p in hyps and p not in seen:
                     seen.add(p)
                     p = hyps[p].get('parent')
-                if p is not None:
-                    refused.append({'explanation': hid, 'why': f'parent {h["parent"]} is unknown or makes a cycle; '
-                                    'drop "parent" to keep it flat'})
+                why = (f'parent {h["parent"]} is unknown or makes a cycle; drop "parent" to keep it flat'
+                       if p is not None else
+                       f'a variant answers the same question as its parent {h["parent"]} ({answers_of(h["parent"])})'
+                       if 'parent' in h and h['answers'] is not None and h['answers'] != answers_of(h['parent'])
+                       else None)
+                if why:
+                    refused.append({'explanation': hid, 'why': why})
                     del hyps[hid]
                     changed = True
+        for hid in hyps:
+            hyps[hid]['answers'] = answers_of(hid)
         rows, seen, known = [], set(), self._evidence_ids()
         for r in data.get('evidence') or []:
             r = r if isinstance(r, dict) else {}
@@ -998,7 +1168,7 @@ class Workspace:
                 refused.append({'row': rid or '?', 'why': why})
                 continue
             seen.add(rid)
-            row = {'id': rid, **{k: r.get(k) for k in ('passage', 'words', 'design', 'n', 'case_definition')},
+            row = {'id': rid, **{k: r.get(k) for k in ('passage', 'words', 'design', 'n', 'case_definition', 'year')},
                    'status': [], 'positions': [], 'cells': {}}
             for s in r.get('status') or []:
                 s = s if isinstance(s, dict) else {}
@@ -1013,20 +1183,23 @@ class Workspace:
                 p = p if isinstance(p, dict) else {}
                 why = ('a position needs the institution' if not str(p.get('institution') or '').strip()
                        else 'a position needs its date: YYYY, YYYY-MM or YYYY-MM-DD' if not self._dated(p.get('date'))
+                       else 'a position needs a stance: ' + '; '.join(f'{k} ({v})' for k, v in STANCES.items())
+                       if p.get('stance') not in STANCES
                        else f'"on" names no standing explanation: {p.get("on")}' if p.get('on') is not None
-                       and p.get('on') not in hyps
+                       and (not isinstance(p.get('on'), str) or p.get('on') not in hyps)
                        else self._quoted(p.get('passage'), p.get('words'), 'position (the words where it takes it)'))
                 if why:
                     refused.append({'row': rid, 'part': 'position', 'why': why})
                 else:
-                    row['positions'].append({k: p.get(k) for k in ('institution', 'date', 'on', 'passage', 'words')})
+                    row['positions'].append({k: p.get(k) for k in ('institution', 'date', 'stance', 'on', 'passage',
+                                                                   'words')})
             cells = r.get('cells') if isinstance(r.get('cells'), dict) else {}
             for hid, c in cells.items():
                 c = c if isinstance(c, dict) else {}
                 pid = c.get('passage') or r['passage']
                 why = (f'no standing explanation {hid}' if hid not in hyps
                        else 'reading must be one of ' + ', '.join(READINGS) if c.get('reading') not in READINGS
-                       else None if c.get('reading') == 'neutral' and not c.get('words')
+                       else None if c.get('reading') in ('neutral', 'not_applicable') and not c.get('words')
                        else self._quoted(pid, c.get('words'), f'cell {hid} (the words that make it {c["reading"]})'))
                 if why:
                     refused.append({'row': rid, 'cell': hid, 'why': why})
@@ -1034,7 +1207,7 @@ class Workspace:
                     row['cells'][hid] = {'reading': c['reading'], 'passage': pid, 'words': c.get('words'),
                                          **({'note': c['note']} if c.get('note') else {})}
             rows.append(row)
-        return {'explanations': list(hyps.values()), 'evidence': rows}, refused
+        return {'questions': list(questions.values()), 'explanations': list(hyps.values()), 'evidence': rows}, refused
 
     @staticmethod
     def _dated(value) -> bool:
@@ -1048,55 +1221,108 @@ class Workspace:
         what passes."""
         m, refused = self._matrix_check(data)
         self._save('matrix.json', m)
-        self.log('matrix', explanations=len(m['explanations']), rows=len(m['evidence']), refused=len(refused))
-        return {'stored': {'explanations': [h['id'] for h in m['explanations']],
+        self.log('matrix', questions=len(m['questions']), explanations=len(m['explanations']),
+                 rows=len(m['evidence']), refused=len(refused))
+        return {'stored': {'questions': [q['id'] for q in m['questions']],
+                           'explanations': [h['id'] for h in m['explanations']],
                            'evidence': [r['id'] for r in m['evidence']]},
                 'refused': refused,
                 **({'next': 'fix each refused part in your file and submit the whole file again'} if refused else {})}
 
+    def _created_year(self) -> int:
+        """The workspace's own position in time, for judging how recent its evidence is."""
+        created = str(self._json('workspace.json', {}).get('created') or '')
+        return int(created[:4]) if re.match(r'\d{4}-', created) else datetime.now(timezone.utc).year
+
     def matrix_show(self) -> dict:
-        """The matrix read the ACH way: an explanation is weakened by evidence
-        inconsistent with it, not strengthened by a count of consistent rows,
-        and only a row that reads differently across explanations can tell
-        them apart. Re-validated from the file on every use."""
+        """The matrix read the ACH way, per question: only explanations answering
+        one question compete (a trigger and a mechanism can both be true). An
+        explanation is weakened by evidence inconsistent with it, not strengthened
+        by a count of consistent rows, and a row discriminates only if it is
+        inconsistent with some of the question's explanations and not others.
+        Re-validated from the file on every use."""
         m, dropped = self._matrix_check(self._json('matrix.json', {}))
         hyps, rows = m['explanations'], m['evidence']
-        pulled, flags, diagnostic, same, few = self._evidence_status(), {}, [], [], []
+        questions = m['questions'] or [{'id': IMPLICIT, 'text': self._json('workspace.json', {}).get('question')}]
+        pulled, flags = self._evidence_status(), {}
         for r in rows:
             f = sorted({s['status'] for s in pulled.get(r['id'], []) + r['status']})
             f += [r['design']] if r['design'] in WEAK_DESIGNS else []
-            f += ['n not stated'] if r['n'] is None else []
-            f += ['case definition not stated'] if r['case_definition'] is None else []
+            f += ['n not stated'] if r['n'] is None and r['design'] not in UNCOUNTED else []
+            f += ['case definition not stated'] if r['case_definition'] is None and r['design'] not in UNCOUNTED else []
             flags[r['id']] = f
-            readings = [c['reading'] for c in r['cells'].values()]
-            (diagnostic if len(set(readings)) > 1 else same if len(readings) > 1 else few).append(r['id'])
         tag = lambda rid: f'{rid} ({", ".join(flags[rid])})' if flags[rid] else rid
-        per = []
-        for h in hyps:
-            read = {r['id']: r['cells'][h['id']]['reading'] for r in rows if h['id'] in r['cells']}
-            inc = [r for r, v in read.items() if v == 'inconsistent']
-            con = [r for r, v in read.items() if v == 'consistent']
-            per.append(((sum(1 for r in inc if not flags[r]), len(inc)), {
-                'id': h['id'], 'claim': h['claim'], **({'parent': h['parent']} if 'parent' in h else {}),
-                'inconsistent': [tag(r) for r in inc], 'consistent': [tag(r) for r in con],
-                'consistent_diagnostic': [r for r in con if r in diagnostic],
-                'neutral': sum(1 for v in read.values() if v == 'neutral'), 'unassessed': len(rows) - len(read)}))
-        per = [e for _, e in sorted(per, key=lambda x: x[0])]
-        on_weak = [{'institution': p['institution'], 'date': p['date'], 'on': p['on'], 'row': r['id'],
-                    'why': flags[r['id']] + (['non-diagnostic: fits every explanation alike'] if r['id'] in same else [])}
-                   for r in rows for p in r['positions'] if flags[r['id']] or r['id'] in same]
+        created, per_q, discriminating = self._created_year(), [], {}
+        for q in questions:
+            ids = [h['id'] for h in hyps if h['answers'] == q['id']]
+            disc, alike, unweighed, bearing = [], [], {}, []
+            for r in rows:
+                bears = {h: r['cells'][h]['reading'] for h in ids
+                         if h in r['cells'] and r['cells'][h]['reading'] != 'not_applicable'}
+                if missing := [h for h in ids if h not in r['cells']]:
+                    unweighed[r['id']] = missing
+                if bears:
+                    bearing.append(r)
+                if 'inconsistent' in bears.values() and set(bears.values()) - {'inconsistent'}:
+                    disc.append({'row': tag(r['id']), 'readings': bears})
+                    discriminating.setdefault(q['id'], set()).add(r['id'])
+                elif len(bears) > 1:
+                    alike.append(tag(r['id']))
+            discriminating.setdefault(q['id'], set())
+            per = []
+            for h in (h for h in hyps if h['answers'] == q['id']):
+                read = {r['id']: r['cells'][h['id']]['reading'] for r in rows if h['id'] in r['cells']}
+                inc = [r for r, v in read.items() if v == 'inconsistent']
+                con = [r for r, v in read.items() if v == 'consistent']
+                per.append(((sum(1 for r in inc if not flags[r]), len(inc)), {
+                    'id': h['id'], 'claim': h['claim'], **({'parent': h['parent']} if 'parent' in h else {}),
+                    'inconsistent': [tag(r) for r in inc], 'consistent': [tag(r) for r in con],
+                    'consistent_discriminating': [r for r in con if r in discriminating[q['id']]],
+                    'neutral': sum(1 for v in read.values() if v == 'neutral'),
+                    'not_applicable': sum(1 for v in read.values() if v == 'not_applicable'),
+                    'unassessed': len(rows) - len(read)}))
+            per = [e for _, e in sorted(per, key=lambda x: x[0])]
+            years = [r['year'] for r in bearing if r['year'] is not None]
+            out = {'id': q['id'], 'text': q['text'], 'explanations': per, 'discriminates': disc,
+                   'fits_all_alike': alike, 'not_yet_weighed': unweighed,
+                   'resting_on_one_row': [e['id'] for e in per if len(e['consistent']) == 1],
+                   'resting_on_no_row': [e['id'] for e in per if not e['consistent']],
+                   'newest_row_year': max(years, default=None)}
+            if len(ids) < 2:
+                out['warning'] = ('fewer than two explanations answer this question: nothing is weighed against '
+                                  'anything. Find who answers it differently (other fields, critics, later studies, '
+                                  'official inquiries)')
+            if bearing and not years:
+                out['coverage'] = 'no row bearing on this question has a year: add "year" to see how recent it is'
+            elif years and max(years) < created - STALE_YEARS:
+                out['coverage'] = (f'the newest evidence is from {max(years)}, more than {STALE_YEARS} years before '
+                                   f'this workspace ({created}): search for the newest and largest studies or '
+                                   'official findings on this question')
+            per_q.append(out)
+        answers = {h['id']: h['answers'] for h in hyps}
+        on_weak = []
+        for r in rows:
+            for p in r['positions']:
+                if p['stance'] not in ('endorses', 'qualifies'):     # rejecting on weak evidence is no weakness
+                    continue
+                qs = [answers[p['on']]] if p['on'] else list(discriminating)
+                rivals = [qid for qid in qs if sum(1 for a in answers.values() if a == qid) > 1]
+                why = flags[r['id']] + (['does not discriminate: inconsistent with none of the rival explanations, '
+                                         'or with all'] if rivals and all(r['id'] not in discriminating[qid]
+                                                                          for qid in rivals) else [])
+                if why:
+                    on_weak.append({'institution': p['institution'], 'date': p['date'], 'stance': p['stance'],
+                                    'on': p['on'], 'row': r['id'], 'why': why})
+        cols = [[h['id'] for h in hyps if h['answers'] == q['id']] for q in questions]
         width = max([len(r['id']) for r in rows] + [3])
-        grid = [f'{"row":<{width}}  ' + ' '.join(h['id'] for h in hyps)] + [
-            f'{r["id"]:<{width}}  ' + ' '.join((r['cells'][h['id']]['reading'][0].upper() if h['id'] in r['cells']
-                                                else '.').center(len(h['id'])) for h in hyps)
-            + f'  {r["design"]} n={r["n"] or "?"} {r["case_definition"] or "case def ?"}'
+        letter = lambda r, h: LETTERS[r['cells'][h]['reading']] if h in r['cells'] else '.'
+        grid = [f'{"row":<{width}}  ' + ' | '.join(' '.join(c) for c in cols)] + [
+            f'{r["id"]:<{width}}  ' + ' | '.join(' '.join(letter(r, h).center(len(h)) for h in c) for c in cols)
+            + f'  {r["design"]}' + (f' {r["year"]}' if r['year'] else '')
+            + ('' if r['design'] in UNCOUNTED else f' n={r["n"] or "?"} {r["case_definition"] or "case def ?"}')
             + (f'  [{"; ".join(flags[r["id"]])}]' if flags[r['id']] else '') for r in rows]
-        self.log('matrix_show', explanations=len(hyps), rows=len(rows), dropped=len(dropped))
-        return {'grid': grid, 'explanations': per,
-                'diagnostic': diagnostic, 'non_diagnostic': same, 'assessed_against_one_or_none': few,
-                'resting_on_one_row': [e['id'] for e in per if len(e['consistent']) == 1],
-                'resting_on_no_row': [e['id'] for e in per if not e['consistent']],
-                'positions_on_disputed_or_weak_rows': on_weak,
+        self.log('matrix_show', questions=len(questions), explanations=len(hyps), rows=len(rows), dropped=len(dropped))
+        return {'grid': grid, 'questions': per_q, 'positions_on_disputed_or_weak_rows': on_weak,
                 **({'dropped_on_use': dropped} if dropped else {})}
 
     def status(self) -> dict:
