@@ -72,12 +72,13 @@ def unused_flags(a) -> str | None:
 
 
 def default_store() -> Path:
-    """The raw store: ./raw if there is one, else the nearest raw/ above this
-    script (a git worktree inside the repository shares the repository's store)."""
-    if Path('raw').is_dir():
+    """The raw store: ./raw if it holds a fetch log, else the nearest raw/ with one
+    above this script (a git worktree inside the repository shares its store)."""
+    has_log = lambda d: (d / 'raw' / 'fetches.jsonl').is_file()   # an empty raw/ is not a store
+    if has_log(Path('.')):
         return Path('raw')
     for d in Path(__file__).resolve().parents:
-        if (d / 'raw').is_dir():
+        if has_log(d):
             return d / 'raw'
     return Path('raw')
 
