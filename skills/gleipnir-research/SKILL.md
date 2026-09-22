@@ -47,7 +47,9 @@ root with `.venv/bin/python scripts/gl.py <command> <workspace> ...`.
    evidence. The words must attribute it ("according to a study presented at...",
    "the company said in a statement") and stand in a passage of the atoms' source; cut
    that passage first if needed. Use one evidence id per study or document across all
-   sources. Atoms with no evidence declared never count as independent evidence. An
+   sources. Atoms with no evidence declared never count as independent evidence. An atom
+   can rest on several pieces: declare each. `rests WS EVIDENCE "" UID --undo --note "why"`
+   takes one back (the same `--undo` works for `relay`). An
    outlet asserting a finding in its own voice still rests on the study: declare it.
 8c. Relays: a report is not nothing, and not evidence either. Each report relays the
    evidence, and what it did matters. Code reads two acts from the atom itself: the

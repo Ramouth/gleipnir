@@ -217,3 +217,18 @@ def test_relays_carry_weight_but_only_a_quoted_check_adds_evidence(tmp_path):
     g = w.compare('Example Holding')[0]
     assert g['independent_evidence'] == 1
     assert [e['status'][0]['status'] for e in g['evidence'] if e['id'] == 'registry-study'] == ['retracted']
+
+
+def test_an_atom_can_rest_on_two_studies_and_a_declaration_can_be_taken_back(ws):
+    w, sid, pid = ws
+    uid = w.add([atom(sid, pid)])['added'][0]['uid']
+    w.rests([uid], 'study-a', 'Example Holding A/S', note='first study')
+    w.rests([uid], 'study-b', 'sold its stake', note='second study')
+    assert w._evidence()[uid] == ['study-a', 'study-b']
+    with pytest.raises(ToolError):
+        w.rests([uid], 'study-c', '', note='never declared', undo=True)
+    w.rests([uid], 'study-a', '', note='misread the citation', undo=True)
+    assert w._evidence()[uid] == ['study-b']
+    w.relay([uid], 'disputes', 'sold its stake', note='x')
+    w.relay([uid], 'disputes', '', note='wrong atom', undo=True)
+    assert w.compare('Example Holding')[0]['rows'][0]['act'] == 'endorses'

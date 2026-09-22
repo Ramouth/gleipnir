@@ -613,21 +613,40 @@ class Workspace:
             raise ToolError('one call per source: the words must be in that source, so split the atoms by source')
         return sources.pop()
 
-    def _declared(self, name: str, key: str) -> dict[str, dict]:
-        """uid -> latest valid declaration in `name`: three or more words found
-        in a passage of the atom's own source, and a note. Re-checked on use."""
-        records, out = self._records(), {}
+    def _declared(self, name: str, key: str) -> dict[str, list[dict]]:
+        """uid -> valid declarations in `name`, oldest first: three or more
+        words found in a passage of the atom's own source, and a note. An undo
+        entry removes that uid's earlier declarations with the same value.
+        Re-checked on use."""
+        records, out = self._records(), defaultdict(list)
         for e in self._json_lines(name):
-            uid, words = e.get('uid'), e.get('words') or ''
-            if uid not in records or len(_ws(words).split()) < 3 or not (e.get('note') or '').strip() \
-                    or not (e.get(key) or '').strip():
+            uid, value = e.get('uid'), (e.get(key) or '').strip()
+            if uid not in records or not value or not (e.get('note') or '').strip():
+                continue
+            if e.get('undo'):
+                out[uid] = [x for x in out[uid] if x[key].strip() != value]
+                continue
+            words = e.get('words') or ''
+            if len(_ws(words).split()) < 3:
                 continue
             try:
                 if self._in_source(words, self.passage(records[uid]['passage_id']).source_id):
-                    out[uid] = e
+                    out[uid].append(e)
             except (ToolError, ValueError):
                 continue
-        return out
+        return {uid: v for uid, v in out.items() if v}
+
+    def _undo(self, name: str, key: str, uids: list[str], value: str, note: str, declared_by: str) -> dict:
+        """Take back a declaration. Kept in the file, so the record shows both."""
+        if not note.strip():
+            raise ToolError('an undo needs a --note saying why')
+        have = self._declared(name, key)
+        missing = [u for u in uids if not any(x[key].strip() == value for x in have.get(u, []))]
+        if missing:
+            raise ToolError(f'nothing to undo: {", ".join(missing)} has no {key} {value}')
+        self._append(name, uids, **{key: value}, undo=True, note=note, declared_by=declared_by)
+        self.log('undo', file=name, uids=uids, value=value)
+        return {'undone': value, 'uids': uids}
 
     def _append(self, name: str, uids: list[str], **entry):
         at = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -635,13 +654,16 @@ class Workspace:
             for uid in uids:
                 f.write(json.dumps({'uid': uid, **entry, 'at': at}, ensure_ascii=False) + '\n')
 
-    def rests(self, uids: list[str], evidence: str, words: str, note: str = '', declared_by: str = 'llm') -> dict:
+    def rests(self, uids: list[str], evidence: str, words: str, note: str = '', declared_by: str = 'llm',
+              undo: bool = False) -> dict:
         """Declare that atoms rest on one piece of evidence (a study, a filing,
         an announcement). Origins say which reports copy each other; this says
         what the reports are about: many independent outlets can all rest on
         one press release. The words must attribute it and stand in a stored
         passage of the atoms' own source."""
         evidence = evidence.strip()
+        if undo:
+            return self._undo('evidence.jsonl', 'evidence', uids, evidence, note, declared_by)
         if not evidence or len(_ws(words).split()) < 3 or not note.strip():
             raise ToolError('evidence needs an id, at least three exact words that show what the atom rests on, '
                             'and a --note saying why')
@@ -658,11 +680,14 @@ class Workspace:
                 **({'similar_ids': near, 'warning': 'a new evidence id close to existing ones: if it is the '
                     'same study or document, declare again with the existing id'} if near else {})}
 
-    def relay(self, uids: list[str], act: str, words: str, note: str = '', declared_by: str = 'llm') -> dict:
+    def relay(self, uids: list[str], act: str, words: str, note: str = '', declared_by: str = 'llm',
+              undo: bool = False) -> dict:
         """Declare what a source did with the evidence beyond passing it on.
         Repeating and endorsing are read from the report chain; these are not:
         verifies (its own check, quoted: becomes evidence of its own), qualifies,
         disputes, distorts (its version says more or other than the evidence)."""
+        if undo:
+            return self._undo('relays.jsonl', 'act', uids, act, note, declared_by)
         if act not in RELAY_ACTS:
             raise ToolError(f'act must be one of {", ".join(RELAY_ACTS)}; repeating and endorsing '
                             'are read from the atom itself')
@@ -726,25 +751,25 @@ class Workspace:
         return a.get('category') if a.get('category') in ACCOUNTABILITY and (a.get('basis') or '').strip() else None
 
     def _evidence_ids(self) -> set[str]:
-        return {e['evidence'].strip() for e in self._declared('evidence.jsonl', 'evidence').values()}
+        return {e['evidence'].strip() for es in self._declared('evidence.jsonl', 'evidence').values() for e in es}
 
     def _evidence(self) -> dict[str, list[str]]:
         """atom uid -> the evidence it rests on: the latest valid `rests`, plus
         the relay's own check where it verifies."""
         out = defaultdict(list)
-        for uid, e in self._declared('evidence.jsonl', 'evidence').items():
-            out[uid].append(e['evidence'].strip())
+        for uid, es in self._declared('evidence.jsonl', 'evidence').items():
+            out[uid].extend(dict.fromkeys(e['evidence'].strip() for e in es))
         records = self._records()
-        for uid, e in self._declared('relays.jsonl', 'act').items():
-            if e['act'] == 'verifies':
+        for uid, es in self._declared('relays.jsonl', 'act').items():
+            if any(e['act'] == 'verifies' for e in es):
                 out[uid].append('check:' + self.passage(records[uid]['passage_id']).source_id)
         return dict(out)
 
     def _act(self, uid: str, record: dict, relays: dict) -> str:
         """What the source did with the claim: a declared act, else read from
         the report chain: its own voice endorses, a nested speaker attributes."""
-        if uid in relays and relays[uid]['act'] in RELAY_ACTS:
-            return relays[uid]['act']
+        if relays.get(uid):
+            return relays[uid][-1]['act']
         chain, node = [], record.get('report')
         while isinstance(node, dict) and 'speaker' in node:
             chain.append(node.get('verb'))

@@ -9,7 +9,8 @@
   gl.py origin  WS SOURCE_ID GROUP --basis "why" [--by NAME]
                 (which reports copy each other: same text, same outlet)
   gl.py rests   WS EVIDENCE "exact words that attribute it" ATOM_UID... --note "why"
-                (what the atoms rest on: one study, filing or announcement; atoms of one source per call)
+                (what the atoms rest on: one study, filing or announcement; atoms of one source per call;
+                 declaring again adds evidence; --undo "" takes one back, with --note)
   gl.py relay   WS ACT "exact words" ATOM_UID... --note "why"
                 (ACT: verifies, qualifies, disputes, distorts; repeating and endorsing are read from the atom)
   gl.py accountability WS SOURCE_ID CATEGORY --basis "why"
@@ -44,7 +45,7 @@ def main():
     ap.add_argument('args', nargs='*')
     ap.add_argument('--publisher'); ap.add_argument('--find'); ap.add_argument('--around', type=int, default=1500)
     ap.add_argument('--before', type=int, default=200); ap.add_argument('--after', type=int, default=600)
-    ap.add_argument('--support', action='store_true'); ap.add_argument('--basis', default='')
+    ap.add_argument('--support', action='store_true'); ap.add_argument('--undo', action='store_true'); ap.add_argument('--basis', default='')
     ap.add_argument('--by', default='llm'); ap.add_argument('--link-same-labels', action='store_true'); ap.add_argument('--note', default=''); ap.add_argument('--store', type=Path, default=Path('raw'))
     a = ap.parse_args()
     if a.command == 'contract':
@@ -82,9 +83,9 @@ def main():
         elif a.command == 'origin':
             out = ws.origin(rest[0], rest[1], a.basis, a.by)
         elif a.command == 'rests':
-            out = ws.rests(rest[2:], rest[0], rest[1], a.note, a.by)
+            out = ws.rests(rest[2:], rest[0], rest[1], a.note, a.by, a.undo)
         elif a.command == 'relay':
-            out = ws.relay(rest[2:], rest[0], rest[1], a.note, a.by)
+            out = ws.relay(rest[2:], rest[0], rest[1], a.note, a.by, a.undo)
         elif a.command == 'accountability':
             out = ws.accountability(rest[0], rest[1], a.basis, a.by)
         elif a.command == 'evidence':
