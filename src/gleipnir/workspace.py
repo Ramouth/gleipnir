@@ -248,6 +248,32 @@ def _xml_text(payload: bytes) -> str:
     return ' '.join(''.join(root.itertext()).split())
 
 
+def _unwrap(payload: bytes) -> bytes:
+    """Bytes as a reader gets them. An archive's raw-file form (web.archive.org/.../id_/)
+    can hand back the gzip body the site sent, without a header saying so: the
+    stored bytes stay as fetched, and the text is read from the unzipped body."""
+    if payload[:2] == b'\x1f\x8b':
+        import zlib
+        try:
+            d = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            body = d.decompress(payload, 50_000_000)       # a bound: no decompression bomb
+            return body if not d.unconsumed_tail else payload
+        except zlib.error:
+            return payload
+    return payload
+
+
+def _pdf_date(payload: bytes) -> str | None:
+    """The creation date a PDF records about itself, if any."""
+    try:
+        from io import BytesIO
+        from pypdf import PdfReader
+        created = PdfReader(BytesIO(payload)).metadata.creation_date
+        return created.date().isoformat() if created else None
+    except Exception:
+        return None
+
+
 def _pdf_text(payload: bytes) -> str:
     try:
         from io import BytesIO
@@ -268,6 +294,7 @@ def page_text(payload: bytes) -> str:
     hidden elements are dropped, comments never parsed, and deep nesting kept
     (huge_tree), so text cannot hide in markup or vanish in it. XML is read as
     text (entities never resolved), a PDF by its text layer."""
+    payload = _unwrap(payload)
     if is_pdf(payload):
         return _pdf_text(payload)
     if is_xml(payload):
@@ -307,6 +334,9 @@ def date_candidates(payload: bytes, url: str) -> dict[str, list[str]]:
     Impossible dates are dropped.
     """
     found: dict[str, list[str]] = defaultdict(list)
+    payload = _unwrap(payload)
+    if is_pdf(payload) and (d := _pdf_date(payload)):
+        found['pdf:creationdate'].append(d)
     if is_html(payload):
         doc = _document(payload)
         for script in doc.xpath('//script[@type="application/ld+json"]'):
@@ -378,7 +408,7 @@ def pick_date(cands: dict[str, list[str]]) -> tuple[str | None, str, bool]:
     fits = lambda a, b: a[:7].startswith(b[:7]) or b[:7].startswith(a[:7])
     conflict = any(not fits(a, b) for a in values for b in values)
     for basis in ('json-ld datePublished', 'citation meta', 'jats pub-date', 'record firstPublicationDate',
-                  'record pubYear', 'meta tag', ARXIV_ORDER):
+                  'record pubYear', 'meta tag', ARXIV_ORDER, 'pdf:creationdate'):
         if cands.get(basis):
             chosen = norm(cands[basis][0])
             return max((v for v in values if v.startswith(chosen)), key=len), basis, conflict

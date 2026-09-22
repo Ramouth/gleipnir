@@ -970,3 +970,11 @@ def test_the_frames_look_for_list_is_a_checklist_the_matrix_must_answer(tmp_path
     w.matrix(m)
     q = w.matrix_show()['questions'][0]
     assert 'look_for_open' not in q and q['look_for_not_found'][0].startswith('the largest cohort')
+
+
+def test_a_gzip_body_from_an_archive_is_read_as_the_page_it_holds(tmp_path):
+    import gzip
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    sid = w.ingest('https://web.archive.org/web/2024id_/https://example.org/a', gzip.compress(PAGE), 200)['id']
+    assert 'sold its stake' in w.read(sid) and w.passage(w.cut(sid, 'Example Holding A/S')['passage']).source_date == '2025-03-01'
