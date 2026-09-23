@@ -4,7 +4,7 @@
   gl.py frame   WS [FRAME.json]             (before any fetch: questions, rival explanations, their predictions,
                 what would discriminate, what to look for; with a file: validate and store it; without:
                 show it on one screen for the user to confirm or steer)
-  gl.py fetch   WS URL [URL...] [--publisher NAME]   (several URLs: each fetched or refused on its own)
+  gl.py fetch   WS URL [URL...] [--publisher NAME] [--fresh]   (a page fetched before is reused from the store)   (several URLs: each fetched or refused on its own)
   gl.py original WS SOURCE_ID YYYY[-MM[-DD]] "exact words that state it" --note "why"
                 (the date of the document a copy reproduces: an archived copy of an older report)
   gl.py read    WS SOURCE_ID [--find "exact words"] [--around 1500]
@@ -61,7 +61,7 @@ from gleipnir.workspace import ToolError, Workspace
 
 
 #: The flags each command uses. Any other is refused, never silently ignored.
-USES = {'init': (), 'frame': (), 'fetch': ('publisher',), 'original': ('note', 'by'), 'read': ('find', 'around'),
+USES = {'init': (), 'frame': (), 'fetch': ('publisher', 'fresh'), 'original': ('note', 'by'), 'read': ('find', 'around'),
         'cut': ('before', 'after'), 'quote': ('before', 'after'), 'check': ('support',), 'add': (), 'origin': ('basis', 'by'),
         'rests': ('note', 'by', 'undo'), 'relay': ('note', 'by', 'undo'), 'accountability': ('basis', 'by'),
         'evidence': ('note', 'by', 'kind'), 'matrix': (), 'compare': ('link_same_labels',),
@@ -179,12 +179,12 @@ def main():
             out = ws.frame(json.loads(sys.stdin.read() if rest[0] == '-' else Path(rest[0]).read_text()))
         elif a.command == 'fetch':
             if len(rest) == 1:
-                out = ws.fetch(rest[0], a.publisher)
+                out = ws.fetch(rest[0], a.publisher, a.fresh)
             else:  # several URLs in one call: each fetched or refused on its own
                 out = []
                 for url in rest:
                     try:
-                        out.append(ws.fetch(url, a.publisher))
+                        out.append(ws.fetch(url, a.publisher, a.fresh))
                     except ToolError as e:
                         out.append({'url': url, 'refused': str(e)})
         elif a.command == 'original':

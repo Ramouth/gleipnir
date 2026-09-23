@@ -100,6 +100,21 @@ answer's slips forward as settled.
 Per-source declarations can be batched: `origin WS origins.json` and `accountability WS
 accountability.json` take a list of `{"source", "group"|"category", "basis"}`.
 
+## Saving and reusing research: projects
+
+- **Save.** When a question is answered, `compile WS PROJECT` saves the workspace into a
+  project store: its frame, matrix and declarations as records, and each quote as a global
+  report atom, verified once. Compile the follow-ups of one question into the same project.
+- **Look first.** Before researching a related question, look at what earlier projects hold
+  (`view PROJECT matrix`). Pages fetched before are reused from the store by `fetch` and
+  `quote` (no network, no 403); pass `--fresh` for a page that may have changed.
+- **Reuse deliberately.** `import NEW OLD [--only ROW,...]` brings rows of an earlier project
+  into a new one, re-checked against the bytes. The readings arrive *inherited: unchecked in
+  this context* and do not count until you check that the row means the same in the new
+  question (population, period, definition, the same explanation), then
+  `confirm NEW RECORD --note "why it holds here"`. A row filed under one question's
+  explanation is not evidence for another's without that check.
+
 ## The unit is the competing explanation, not the source
 
 Following sources leads to relaying a trusted source's framing instead of examining

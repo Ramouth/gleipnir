@@ -996,3 +996,20 @@ def test_an_arxiv_revision_is_not_a_date_conflict_but_an_earlier_date_is():
     assert pick_date({ARXIV_ORDER: ['2006-07'], 'citation meta': ['2006-07-12'], 'meta tag': ['2007-04-03']}) \
         == ('2006-07-12', 'citation meta', False)
     assert pick_date({ARXIV_ORDER: ['2006-07'], 'citation meta': ['2005-01-12']})[2] is True
+
+
+def test_a_page_fetched_before_is_reused_from_the_store_without_a_new_fetch_record(tmp_path, monkeypatch):
+    first = Workspace(tmp_path / 'a', tmp_path / 'raw', classifier=Entails())
+    first.init('q')
+    first.ingest('https://example.org/a', PAGE, 200)
+    n = len(first.store.fetches())
+    def no_network(*a, **k):
+        raise AssertionError('went to the network')
+    monkeypatch.setattr('urllib.request.urlopen', no_network)
+    second = Workspace(tmp_path / 'b', tmp_path / 'raw', classifier=Entails())
+    second.init('another project')
+    out = second.fetch('https://example.org/a')
+    assert 'reused_from_store' in out and len(second.store.fetches()) == n
+    assert 'sold its stake' in second.read(out['id'])
+    with pytest.raises(ToolError, match='went to the network'):
+        second.fetch('https://example.org/a', fresh=True)

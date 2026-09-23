@@ -567,7 +567,23 @@ class Workspace:
         self.log('init', question=question)
         return {'workspace': str(self.root), 'question': question}
 
-    def fetch(self, url: str, publisher: str | None = None) -> dict:
+    def fetch(self, url: str, publisher: str | None = None, fresh: bool = False) -> dict:
+        """A page from the raw store if it was fetched before from exactly this address
+        (for any project: bytes are shared; its own fetch record stays the record),
+        else from the network. `fresh` always
+        goes to the network, for a page that may have changed."""
+        if not fresh:
+            prior = [f for f in self.store.fetches() if f.http_status == 200 and f.source == 'web'
+                     and f.resource_id == url
+                     and self.store.path_of(f.content_hash).exists()]
+            if prior:
+                f = prior[-1]
+                try:
+                    out = self.ingest(url, self.store.get(f.content_hash), 200, publisher, stored=f)
+                except ToolError:
+                    pass                                        # a stored page now refused: go to the network
+                else:
+                    return {**out, 'reused_from_store': f'fetched {str(f.fetched_at)[:19]}; pass --fresh to fetch again'}
         req = urllib.request.Request(url, headers={'User-Agent': UA})
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -579,13 +595,15 @@ class Workspace:
                 from None
         return self.ingest(url, payload, status, publisher=publisher)
 
-    def ingest(self, url: str, payload: bytes, status: int, publisher: str | None = None) -> dict:
+    def ingest(self, url: str, payload: bytes, status: int, publisher: str | None = None, stored=None) -> dict:
         text = page_text(payload)                       # refuses before storing a bad page
         if why := not_a_document(payload, text):
             self.log('fetch', url=url, refused=why)
             raise ToolError(f'{why}: nothing stored; {ELSEWHERE}')
-        rec = self.store.put(payload=payload, source='web', resource_type='web_page', resource_id=url,
-                             http_status=status, request_params={})
+        # a page already in the store keeps its own fetch record: no new record claims a new fetch
+        rec = stored if stored is not None else \
+            self.store.put(payload=payload, source='web', resource_type='web_page', resource_id=url,
+                           http_status=status, request_params={})
         sid = f'web:{_host(url)}/{rec.content_hash[:10]}'
         sources = self.sources()
         sources[sid] = {'id': sid, 'url': url, 'publisher': publisher, 'sha256': rec.content_hash,
@@ -593,7 +611,7 @@ class Workspace:
                         'fetched_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
         self._save('sources.json', list(sources.values()))
         published, basis, conflict, cands = self._date(sources[sid])
-        self.log('fetch', url=url, source=sid, sha256=rec.content_hash)
+        self.log('fetch', url=url, source=sid, sha256=rec.content_hash, **({'reused': True} if stored else {}))
         out = {'id': sid, 'url': url, 'chars': len(text), 'published_on': published, 'date_basis': basis,
                'date_conflict': conflict, 'date_candidates': cands}
         notes = []
