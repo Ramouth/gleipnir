@@ -143,6 +143,7 @@ def main():
     ap.add_argument('--before', type=int); ap.add_argument('--after', type=int)
     ap.add_argument('--support', action='store_true', default=None)
     ap.add_argument('--undo', action='store_true', default=None)
+    ap.add_argument('--fresh', action='store_true', default=None)
     ap.add_argument('--basis'); ap.add_argument('--by'); ap.add_argument('--kind'); ap.add_argument('--note')
     ap.add_argument('--link-same-labels', action='store_true', default=None)
     ap.add_argument('--store', type=Path, default=None)

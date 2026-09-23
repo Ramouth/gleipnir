@@ -572,6 +572,8 @@ class Workspace:
         (for any project: bytes are shared; its own fetch record stays the record),
         else from the network. `fresh` always
         goes to the network, for a page that may have changed."""
+        if urlparse(url).scheme not in ('http', 'https') or not urlparse(url).netloc:
+            raise ToolError(f'not a web address: {url!r}; give the full https:// URL')
         if not fresh:
             prior = [f for f in self.store.fetches() if f.http_status == 200 and f.source == 'web'
                      and f.resource_id == url
