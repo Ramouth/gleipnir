@@ -39,6 +39,15 @@
   gl.py status  WS
   gl.py contract                             (the atom contract to write atoms against)
 
+The research store (decision 0002): projects of records and global report atoms, in
+research/ beside the raw store (--research DIR puts them elsewhere).
+  gl.py compile WS PROJECT                   (a workspace becomes a project; WS is only read)
+  gl.py import  PROJECT_B PROJECT_A [--only ROW,ROW]   (A's evidence into B, re-grounded against the
+                bytes; readings arrive unchecked in B's context; A is never written)
+  gl.py confirm PROJECT RECORD --note "why it holds here"   (an inherited reading counts in PROJECT)
+  gl.py view    PROJECT matrix [--as-of YYYY[-MM[-DD]]]   (the matrix from the records; as of a date,
+                only evidence whose source was dated by then)
+
 Output is JSON, except `read`, `contract` and the `frame` and `matrix` screens. A
 refusal exits with status 2 and says what to do instead; so does a flag the command
 does not use.
@@ -57,7 +66,9 @@ USES = {'init': (), 'frame': (), 'fetch': ('publisher',), 'original': ('note', '
         'rests': ('note', 'by', 'undo'), 'relay': ('note', 'by', 'undo'), 'accountability': ('basis', 'by'),
         'evidence': ('note', 'by', 'kind'), 'matrix': (), 'compare': ('link_same_labels',),
         'explain': ('note', 'by'), 'pending': (), 'passage': (), 'review': ('note', 'by'), 'links': (),
-        'link': ('basis', 'by', 'undo', 'note'), 'status': (), 'contract': ()}
+        'link': ('basis', 'by', 'undo', 'note'), 'status': (), 'contract': (),
+        'compile': ('research',), 'import': ('research', 'only', 'by'), 'confirm': ('research', 'note', 'by'),
+        'view': ('research', 'as_of')}
 DEFAULTS = {'around': 1500, 'before': 200, 'after': 600, 'support': False, 'undo': False, 'basis': '', 'by': 'llm',
             'link_same_labels': False, 'note': ''}
 
@@ -83,6 +94,47 @@ def default_store() -> Path:
     return Path('raw')
 
 
+def print_matrix(out: dict):
+    """One screen: the grid, then one line per item."""
+    print('\n'.join(out.pop('grid')))
+    for q in out.pop('questions'):
+        print(f"\n== {q.pop('id')}: {q.pop('text')}")
+        for e in q.pop('explanations'):
+            print(json.dumps(e, ensure_ascii=False))
+        for k, v in q.items():
+            print(f'  {k}: {json.dumps(v, ensure_ascii=False)}')
+    print()
+    for k, v in out.items():
+        print(f'{k}: {json.dumps(v, ensure_ascii=False)}')
+
+
+def store_command(a):
+    """compile, import, confirm and view: the research store (decision 0002)."""
+    from gleipnir import store as rs
+    raw = a.store or default_store()
+    st = rs.Store(a.research or raw.resolve().parent / 'research', raw)
+    rest = a.args
+    try:
+        if a.command == 'compile':
+            out = rs.compile_workspace(st, Path(rest[0]), rest[1])
+        elif a.command == 'import':
+            only = [x.strip() for x in a.only.split(',') if x.strip()] if a.only else None
+            out = rs.import_project(st, rest[0], rest[1], only, a.by)
+        elif a.command == 'confirm':
+            out = rs.confirm(st, rest[0], rest[1], a.note, a.by)
+        elif rest[1:] != ['matrix']:
+            raise ToolError('view PROJECT matrix: the matrix is the one view so far')
+        else:
+            print_matrix(rs.matrix_view(st, rest[0], a.as_of)); return
+    except ToolError as e:
+        print(json.dumps({'refused': str(e)}), file=sys.stderr)
+        sys.exit(2)
+    except IndexError as e:
+        print(json.dumps({'refused': f'bad arguments: {e}'}), file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps(out, indent=1, ensure_ascii=False))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('command')
@@ -94,6 +146,7 @@ def main():
     ap.add_argument('--basis'); ap.add_argument('--by'); ap.add_argument('--kind'); ap.add_argument('--note')
     ap.add_argument('--link-same-labels', action='store_true', default=None)
     ap.add_argument('--store', type=Path, default=None)
+    ap.add_argument('--research', type=Path); ap.add_argument('--only'); ap.add_argument('--as-of')
     a = ap.parse_args()
     if why := unused_flags(a):
         print(json.dumps({'refused': why}), file=sys.stderr)
@@ -107,6 +160,8 @@ def main():
         return
     if not a.args:
         ap.error('a workspace directory is required')
+    if a.command in ('compile', 'import', 'confirm', 'view'):
+        return store_command(a)
     ws = Workspace(Path(a.args[0]), a.store or default_store())
     rest = a.args[1:]
 
@@ -185,18 +240,7 @@ def main():
             out = ws.evidence_status(rest[0], rest[1], rest[2], rest[3], a.note, a.by, a.kind)
         elif a.command == 'matrix':
             if not rest:
-                out = ws.matrix_show()                  # one screen: the grid, then one line per item
-                print('\n'.join(out.pop('grid')))
-                for q in out.pop('questions'):
-                    print(f"\n== {q.pop('id')}: {q.pop('text')}")
-                    for e in q.pop('explanations'):
-                        print(json.dumps(e, ensure_ascii=False))
-                    for k, v in q.items():
-                        print(f'  {k}: {json.dumps(v, ensure_ascii=False)}')
-                print()
-                for k, v in out.items():
-                    print(f'{k}: {json.dumps(v, ensure_ascii=False)}')
-                return
+                print_matrix(ws.matrix_show()); return
             else:
                 out = ws.matrix(json.loads(sys.stdin.read() if rest[0] == '-' else Path(rest[0]).read_text()))
         elif a.command == 'compare':
