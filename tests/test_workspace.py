@@ -978,3 +978,21 @@ def test_a_gzip_body_from_an_archive_is_read_as_the_page_it_holds(tmp_path):
     w.init('q')
     sid = w.ingest('https://web.archive.org/web/2024id_/https://example.org/a', gzip.compress(PAGE), 200)['id']
     assert 'sold its stake' in w.read(sid) and w.passage(w.cut(sid, 'Example Holding A/S')['passage']).source_date == '2025-03-01'
+
+
+def test_a_cut_begins_where_its_sentence_begins(tmp_path):
+    w = Workspace(tmp_path / 'ws', tmp_path / 'raw', classifier=Entails())
+    w.init('q')
+    page = (b'<html><body><p>The first sentence is about something else entirely. The board found that '
+            b'the joint had corroded for years before it failed. A third sentence follows.</p></body></html>')
+    sid = w.ingest('https://example.org/b', page, 200)['id']
+    text = w.passage(w.cut(sid, 'corroded for years', before=20, after=10)['passage']).text
+    assert text.startswith('The board found') and text.endswith('before it failed.')
+    assert 'corroded' in w.passage(w.cut(sid, 'corroded for years', before=0, after=5)['passage']).text
+
+
+def test_an_arxiv_revision_is_not_a_date_conflict_but_an_earlier_date_is():
+    from gleipnir.workspace import ARXIV_ORDER, pick_date
+    assert pick_date({ARXIV_ORDER: ['2006-07'], 'citation meta': ['2006-07-12'], 'meta tag': ['2007-04-03']}) \
+        == ('2006-07-12', 'citation meta', False)
+    assert pick_date({ARXIV_ORDER: ['2006-07'], 'citation meta': ['2005-01-12']})[2] is True

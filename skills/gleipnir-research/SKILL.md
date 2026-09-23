@@ -9,6 +9,10 @@ You are the researcher. The tools do not research for you; they show you what yo
 cannot see unaided and refuse what cannot be verified. Run them from the repository
 root with `.venv/bin/python scripts/gl.py <command> <workspace> ...`.
 
+Write every JSON file (frame, matrix, quotes, atoms) with a quoted heredoc
+(`cat > frame.json <<'EOF'`) and put arguments containing `$` in single quotes: an
+unquoted shell turns "$15" into "5" without a word, and the tools cannot tell.
+
 ## First: the frame, before any fetching
 
 Coverage is decided before research starts, by which questions get asked. So before

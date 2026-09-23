@@ -263,11 +263,19 @@ def _unwrap(payload: bytes) -> bytes:
     return payload
 
 
+def _quiet_pdf():
+    """pypdf logs a warning per damaged object ("Ignoring wrong pointing object"),
+    hundreds per bad file, into the tool's output: only errors are let through."""
+    import logging
+    logging.getLogger('pypdf').setLevel(logging.ERROR)
+
+
 def _pdf_date(payload: bytes) -> str | None:
     """The creation date a PDF records about itself, if any."""
     try:
         from io import BytesIO
         from pypdf import PdfReader
+        _quiet_pdf()
         created = PdfReader(BytesIO(payload)).metadata.creation_date
         return created.date().isoformat() if created else None
     except Exception:
@@ -281,6 +289,7 @@ def _pdf_text(payload: bytes) -> str:
     except ImportError:
         raise ToolError('this is a PDF and no PDF reader is installed (pypdf): fetch the HTML version, '
                         'the Europe PMC full text, or the DOI landing page instead') from None
+    _quiet_pdf()
     try:
         reader = PdfReader(BytesIO(payload))
         return ' '.join(' '.join((page.extract_text() or '') for page in reader.pages).split())
@@ -406,6 +415,9 @@ def pick_date(cands: dict[str, list[str]]) -> tuple[str | None, str, bool]:
     norm = lambda v: v[:4] if v.endswith('-01-01') and any(w[:4] == v[:4] and w != v for w in raw) else v
     values = {norm(v) for v in raw}
     fits = lambda a, b: a[:7].startswith(b[:7]) or b[:7].startswith(a[:7])
+    if cands.get(ARXIV_ORDER):   # an arXiv record also carries its revisions' dates: later ones are not a conflict
+        first = cands[ARXIV_ORDER][0][:7]
+        values = {v for v in values if v[:7] <= first} | {first}
     conflict = any(not fits(a, b) for a in values for b in values)
     for basis in ('json-ld datePublished', 'citation meta', 'jats pub-date', 'record firstPublicationDate',
                   'record pubYear', 'meta tag', ARXIV_ORDER, 'pdf:creationdate'):
@@ -667,8 +679,8 @@ class Workspace:
         return {**out, 'url': url}
 
     def cut(self, source_id: str, anchor: str, before: int = 200, after: int = 600) -> dict:
-        """Cut a passage around the anchor, ending at the end of a sentence. A
-        span already inside a stored passage returns that passage."""
+        """Cut a passage around the anchor, from the start of a sentence to the end
+        of one. A span already inside a stored passage returns that passage."""
         s = self._source(source_id)
         text = self._text(s)
         anchor = ' '.join(anchor.split())
@@ -678,6 +690,10 @@ class Workspace:
         start, end = max(0, at - before), min(len(text), at + len(anchor) + after)
         if m := SENTENCE_END.search(text, max(start, end - 1), min(len(text), end + SNAP)):
             end = m.end()
+        if start > 0:   # and it begins where a sentence begins: the last sentence end before it, within reach
+            if ends := list(SENTENCE_END.finditer(text, max(0, start - SNAP), start + 1)):
+                start = ends[-1].end()
+                start = min(at, start + len(text[start:]) - len(text[start:].lstrip()))
         passages = self.passages()
         dated = {'source_id': source_id, 'source_date': self._date(s)[0],
                  **({'original_date': o} if (o := self._original(s)) else {})}
